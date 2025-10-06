@@ -1,0 +1,266 @@
+FROM nvcr.io/nvidia/deepstream:7.1-triton-multiarch
+
+ARG CMAKE_VERSION_MAJOR=3
+ARG CMAKE_VERSION_MINOR=25
+ARG CMAKE_VERSION_PATCH=3
+
+ARG EIGEN_VERSION_MAJOR=3
+ARG EIGEN_VERSION_MINOR=4
+ARG EIGEN_VERSION_PATCH=0
+
+ARG OPENCV_VERSION_MAJOR=4
+ARG OPENCV_VERSION_MINOR=11
+ARG OPENCV_VERSION_PATCH=0
+
+ARG PCL_VERSION_MAJOR=1
+ARG PCL_VERSION_MINOR=10
+ARG PCL_VERSION_PATCH=0
+
+ARG PYBIND11_VERSION_MAJOR=2
+ARG PYBIND11_VERSION_MINOR=13
+ARG PYBIND11_VERSION_PATCH=0
+
+ARG YAML_CPP_VERSION_MAJOR=0
+ARG YAML_CPP_VERSION_MINOR=8
+ARG YAML_CPP_VERSION_PATCH=0
+
+ENV TZ=US/Pacific
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+# Install dependencies
+RUN apt-get update --fix-missing && apt-get install -y --no-install-recommends \
+    # Python and development tools
+    python3-pip \
+    python3-dev \
+    # Build tools and compilers
+    build-essential \
+    cmake \
+    cmake-curses-gui \
+    checkinstall \
+    g++ \
+    gcc \
+    gfortran \
+    # Version control and utilities
+    git \
+    vim \
+    tmux \
+    wget \
+    curl \
+    bzip2 \
+    ca-certificates \
+    gnupg \
+    software-properties-common \
+    # Graphics and GUI libraries
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgtk2.0-dev \
+    qtbase5-dev \
+    # Math and science libraries
+    libblas-dev \
+    liblapack-dev \
+    libatlas-base-dev \
+    # Security and networking
+    libssl-dev \
+    libzmq3-dev \
+    # Boost libraries
+    libboost-filesystem-dev \
+    libboost-date-time-dev \
+    libboost-iostreams-dev \
+    libboost-system-dev \
+    libboost-program-options-dev \
+    libboost-all-dev \
+    # Point cloud and 3D processing
+    libflann-dev \
+    # Image and video processing
+    libjpeg8-dev \
+    libtiff5-dev \
+    pkg-config \
+    yasm \
+    libavcodec-dev \
+    libavformat-dev \
+    libswscale-dev \
+    libdc1394-dev \
+    libxine2-dev \
+    libv4l-dev \
+    libtbb-dev \
+    ffmpeg \
+    # Audio/video codecs
+    libfaac-dev \
+    libmp3lame-dev \
+    libtheora-dev \
+    libvorbis-dev \
+    libxvidcore-dev \
+    libopencore-amrnb-dev \
+    libopencore-amrwb-dev \
+    x264 \
+    v4l-utils \
+    # Protocol buffers and logging
+    libprotobuf-dev \
+    protobuf-compiler \
+    libgoogle-glog-dev \
+    libgflags-dev \
+    # Additional libraries
+    libgphoto2-dev \
+    libhdf5-dev \
+    doxygen \
+    proj-data \
+    libproj-dev \
+    libyaml-cpp-dev \
+    libzmq3-dev \
+    freeglut3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+
+# Install cmake
+RUN cd / &&\
+wget http://www.cmake.org/files/v${CMAKE_VERSION_MAJOR}.${CMAKE_VERSION_MINOR}/cmake-${CMAKE_VERSION_MAJOR}.${CMAKE_VERSION_MINOR}.${CMAKE_VERSION_PATCH}.tar.gz &&\
+tar xf cmake-${CMAKE_VERSION_MAJOR}.${CMAKE_VERSION_MINOR}.${CMAKE_VERSION_PATCH}.tar.gz &&\
+cd cmake-${CMAKE_VERSION_MAJOR}.${CMAKE_VERSION_MINOR}.${CMAKE_VERSION_PATCH} &&\
+./configure &&\
+make &&\
+make install
+
+
+# Install Eigen
+RUN cd / && \
+    wget https://gitlab.com/libeigen/eigen/-/archive/${EIGEN_VERSION_MAJOR}.${EIGEN_VERSION_MINOR}.${EIGEN_VERSION_PATCH}/eigen-${EIGEN_VERSION_MAJOR}.${EIGEN_VERSION_MINOR}.${EIGEN_VERSION_PATCH}.tar.gz && \
+    tar xf eigen-${EIGEN_VERSION_MAJOR}.${EIGEN_VERSION_MINOR}.${EIGEN_VERSION_PATCH}.tar.gz && \
+    cd eigen-${EIGEN_VERSION_MAJOR}.${EIGEN_VERSION_MINOR}.${EIGEN_VERSION_PATCH} && \
+    mkdir build && \
+    cd build && \
+    cmake .. && \
+    make install && \
+    cd / && \
+    rm -rf eigen-${EIGEN_VERSION_MAJOR}.${EIGEN_VERSION_MINOR}.${EIGEN_VERSION_PATCH}.tar.gz eigen-${EIGEN_VERSION_MAJOR}.${EIGEN_VERSION_MINOR}.${EIGEN_VERSION_PATCH}
+
+
+# Install OpenCV
+RUN cd / && \
+    git clone --depth 1 --branch ${OPENCV_VERSION_MAJOR}.${OPENCV_VERSION_MINOR}.${OPENCV_VERSION_PATCH} https://github.com/opencv/opencv && \
+    git clone --depth 1 --branch ${OPENCV_VERSION_MAJOR}.${OPENCV_VERSION_MINOR}.${OPENCV_VERSION_PATCH} https://github.com/opencv/opencv_contrib && \
+    mkdir -p /opencv/build && \
+    cd /opencv/build && \
+    cmake ..  -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_CUDA_STUBS=OFF \
+        -DBUILD_DOCS=OFF \
+        -DWITH_MATLAB=OFF \
+        -Dopencv_dnn_BUILD_TORCH_IMPORTE=OFF \
+        -DCUDA_FAST_MATH=ON \
+        -DMKL_WITH_OPENMP=ON \
+        -DOPENCV_ENABLE_NONFREE=ON \
+        -DWITH_OPENMP=ON \
+        -DWITH_QT=ON \
+        -DWITH_OPENEXR=ON \
+        -DENABLE_PRECOMPILED_HEADERS=OFF \
+        -DBUILD_opencv_cudacodec=OFF \
+        -DINSTALL_PYTHON_EXAMPLES=OFF \
+        -DWITH_TIFF=OFF \
+        -DWITH_WEBP=OFF \
+        -DWITH_FFMPEG=ON \
+        -DOPENCV_EXTRA_MODULES_PATH=../../opencv_contrib/modules \
+        -DCMAKE_CXX_FLAGS=-std=c++17 \
+        -DENABLE_CXX11=OFF \
+        -DBUILD_opencv_xfeatures2d=OFF \
+        -DOPENCV_DNN_OPENCL=OFF \
+        -DWITH_CUDA=ON \
+        -DWITH_OPENCL=OFF \
+        -DBUILD_opencv_wechat_qrcode=OFF \
+        -DCMAKE_CXX_STANDARD=17 \
+        -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+        -DOPENCV_CUDA_OPTIONS_opencv_test_cudev=-std=c++17 \
+        -DCUDA_ARCH_BIN="7.0 7.5 8.0 8.6 9.0" \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DCMAKE_INSTALL_LIBDIR=lib \
+        -DINSTALL_PKGCONFIG=ON \
+        -DOPENCV_GENERATE_PKGCONFIG=ON \
+        -DPKG_CONFIG_PATH=/usr/local/lib/pkgconfig \
+        -DINSTALL_PYTHON_EXAMPLES=OFF \
+        -DINSTALL_C_EXAMPLES=OFF && \
+    make -j$(nproc) && \
+    make install && \
+    cd / && \
+    rm -rf /opencv /opencv_contrib
+
+# Install PCL
+RUN cd / && \
+    git clone --depth 1 --branch pcl-${PCL_VERSION_MAJOR}.${PCL_VERSION_MINOR}.${PCL_VERSION_PATCH} https://github.com/PointCloudLibrary/pcl && \
+    mkdir -p /pcl/build && \
+    cd /pcl/build && \
+    cmake .. \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_apps=OFF \
+        -DBUILD_GPU=OFF \
+        -DBUILD_CUDA=OFF \
+        -DBUILD_examples=OFF \
+        -DBUILD_global_tests=OFF \
+        -DBUILD_simulation=OFF \
+        -DCUDA_BUILD_EMULATION=OFF \
+        -DCMAKE_CXX_FLAGS=-std=c++17 \
+        -DPCL_ENABLE_SSE=ON \
+        -DPCL_SHARED_LIBS=ON \
+        -DWITH_VTK=OFF \
+        -DPCL_ONLY_CORE_POINT_TYPES=ON \
+        -DPCL_COMMON_WARNINGS=OFF && \
+    make -j$(nproc) && \
+    make install && \
+    cd / && \
+    rm -rf /pcl
+
+# Install Pybind11
+RUN cd / && \
+    git clone --depth 1 --branch v${PYBIND11_VERSION_MAJOR}.${PYBIND11_VERSION_MINOR}.${PYBIND11_VERSION_PATCH} https://github.com/pybind/pybind11 && \
+    mkdir -p /pybind11/build && \
+    cd /pybind11/build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DPYBIND11_INSTALL=ON -DPYBIND11_TEST=OFF && \
+    make -j$(nproc) && \
+    make install && \
+    cd / && \
+    rm -rf /pybind11
+
+# Install YAML-CPP
+RUN cd / && \
+    git clone --depth 1 --branch ${YAML_CPP_VERSION_MAJOR}.${YAML_CPP_VERSION_MINOR}.${YAML_CPP_VERSION_PATCH} https://github.com/jbeder/yaml-cpp && \
+    mkdir -p /yaml-cpp/build && \
+    cd /yaml-cpp/build && \
+    cmake .. \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        -DBUILD_TESTING=OFF \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DINSTALL_GTEST=OFF \
+        -DYAML_CPP_BUILD_TESTS=OFF \
+        -DYAML_BUILD_SHARED_LIBS=ON && \
+    make -j$(nproc) && \
+    make install && \
+    cd / && \
+    rm -rf /yaml-cpp
+
+SHELL ["/bin/bash", "--login", "-c"]
+
+# Install Python packages directly with system Python to add additional conda env since docker should provide isolated environment
+RUN apt-get remove -y python3-blinker || true && \
+    pip3 install --upgrade pip setuptools wheel && \
+    pip3 install torch==2.6.0 torchvision==0.21.0 torchaudio && \
+    pip3 install --no-cache-dir kaolin==0.17.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.5.1_cu124.html && \
+    pip3 install "git+https://github.com/facebookresearch/pytorch3d.git@stable" && \
+    pip3 install --break-system-packages --force-reinstall blinker && \
+    pip3 install trimesh wandb matplotlib imageio tqdm open3d ruamel.yaml sacred kornia pymongo pyrender jupyterlab ninja "Cython>=0.29.37" yacs && \
+    pip3 install scipy scikit-learn
+
+
+ENV CUDA_HOME /usr/local/cuda
+ENV LD_LIBRARY_PATH /usr/local/cuda/lib64
+ENV OPENCV_IO_ENABLE_OPENEXR=1
+# Fix multiprocessing issues
+ENV PYTHONUNBUFFERED=1
+ENV OMP_NUM_THREADS=1
+
+
+RUN imageio_download_bin freeimage
+#### Kaolin will change numpy version
+RUN pip3 install --break-system-packages --force-reinstall blinker && \
+    pip3 install numpy==1.26.4 transformations einops scikit-image awscli-plugin-endpoint gputil xatlas pymeshlab rtree dearpygui pytinyrenderer PyQt5 cython-npm chardet openpyxl
+
+RUN apt-get update --fix-missing && \
+    apt install -y rsync lbzip2 pigz zip p7zip-full p7zip-rar
