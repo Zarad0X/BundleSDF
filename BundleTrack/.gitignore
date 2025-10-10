@@ -17,6 +17,7 @@ src/ThirdParty/surfel_meshing
 *.so
 src/ThirdParty/BundleFusion/mLibExternal/
 *.zip
+*.png
 *.tar.gz
 **__pycache__**
 Features/

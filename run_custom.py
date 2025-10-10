@@ -6,7 +6,6 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
-
 from bundlesdf import *
 import argparse
 import os,sys
@@ -79,7 +78,7 @@ def run_one_video(video_dir='/home/bowen/debug/2022-11-18-15-10-24_milk', out_fo
     depth = cv2.resize(depth, (W,H), interpolation=cv2.INTER_NEAREST)
 
     if i==0:
-      mask = reader.get_mask(0)
+      mask = reader.get_mask(0,args)
       mask = cv2.resize(mask, (W,H), interpolation=cv2.INTER_NEAREST)
       if use_segmenter:
         mask = segmenter.run(color_file.replace('rgb','masks'))
@@ -87,7 +86,7 @@ def run_one_video(video_dir='/home/bowen/debug/2022-11-18-15-10-24_milk', out_fo
       if use_segmenter:
         mask = segmenter.run(color_file.replace('rgb','masks'))
       else:
-        mask = reader.get_mask(i)
+        mask = reader.get_mask(i,args)
         mask = cv2.resize(mask, (W,H), interpolation=cv2.INTER_NEAREST)
 
     if cfg_bundletrack['erode_mask']>0:
@@ -216,6 +215,7 @@ if __name__=="__main__":
   parser.add_argument('--use_gui', type=int, default=1)
   parser.add_argument('--stride', type=int, default=1, help='interval of frames to run; 1 means using every frame')
   parser.add_argument('--debug_level', type=int, default=2, help='higher means more logging')
+  parser.add_argument('--mask', type=str, default='low', help='low/high')
   args = parser.parse_args()
 
   if args.mode=='run_video':
