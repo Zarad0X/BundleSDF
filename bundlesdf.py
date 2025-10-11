@@ -788,7 +788,7 @@ class BundleSdf:
 
 
 
-  def run_global_nerf(self, reader=None, get_texture=False, tex_res=1024):
+  def run_global_nerf(self, reader=None, get_texture=False, tex_res=1024, mask_args=None):
     '''
     @reader: data reader, sometimes we want to use the full resolution raw image
     '''
@@ -830,7 +830,10 @@ class BundleSdf:
         id = reader.id_strs.index(frame_id)
         rgbs.append(reader.get_color(id))
         depths.append(reader.get_depth(id))
-        masks.append(reader.get_mask(id))
+        if mask_args is not None:
+          masks.append(reader.get_mask(id, mask_args))
+        else:
+          masks.append(reader.get_mask(id))
       else:
         self.cfg_nerf['down_scale_ratio'] = 1   # Images have been downscaled in tracking outputs
         rgb_file = f"{self.debug_dir}/color_segmented/{frame_id}.png"

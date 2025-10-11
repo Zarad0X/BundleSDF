@@ -147,7 +147,7 @@ def run_one_video_global_nerf(out_folder='/home/bowen/debug/bundlesdf_scan_coffe
 
   tracker = BundleSdf(cfg_track_dir=cfg_track_dir, cfg_nerf_dir=cfg_nerf_dir, start_nerf_keyframes=5)
   tracker.cfg_nerf = cfg_nerf
-  tracker.run_global_nerf(reader=reader, get_texture=True, tex_res=512)
+  tracker.run_global_nerf(reader=reader, get_texture=True, tex_res=512, mask_args=args.mask)
   tracker.on_finish()
 
   print(f"Done")
@@ -210,13 +210,21 @@ if __name__=="__main__":
   parser = argparse.ArgumentParser()
   parser.add_argument('--mode', type=str, default="run_video", help="run_video/global_refine/draw_pose")
   parser.add_argument('--video_dir', type=str, default="/home/bowen/debug/2022-11-18-15-10-24_milk/")
-  parser.add_argument('--out_folder', type=str, default="/home/bowen/debug/bundlesdf_2022-11-18-15-10-24_milk")
+  # if --out_folder is not provided, we will set it to <video_dir>/bundlesdf below
+  parser.add_argument('--out_folder', type=str, default=None,
+                      help='output folder (default: <video_dir>/bundlesdf)')
   parser.add_argument('--use_segmenter', type=int, default=0)
-  parser.add_argument('--use_gui', type=int, default=1)
+  parser.add_argument('--use_gui', type=int, default=0)
   parser.add_argument('--stride', type=int, default=1, help='interval of frames to run; 1 means using every frame')
   parser.add_argument('--debug_level', type=int, default=2, help='higher means more logging')
   parser.add_argument('--mask', type=str, default='0', help='0/1')
   args = parser.parse_args()
+
+  # If out_folder not specified, set it to <video_dir>/bundlesdf
+  if args.out_folder is None:
+    # remove trailing slash from video_dir, then append '/bundlesdf'
+    vd = args.video_dir.rstrip('/')
+    args.out_folder = f"{vd}/bundlesdf"
 
   if args.mode=='run_video':
     run_one_video(video_dir=args.video_dir, out_folder=args.out_folder, use_segmenter=args.use_segmenter, use_gui=args.use_gui)

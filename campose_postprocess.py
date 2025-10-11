@@ -3,12 +3,12 @@
 Read a dataset folder produced by BundleSDF output and produce a JSON with frames and camera intrinsics.
 
 Usage:
-    python campose_postprocess.py /path/to/output/2022-11-18-15-10-24_milk --out camera.json
+    python campose_postprocess.py --object_name usb_01
 
 Assumptions:
  - `cam_K.txt` is a 3x3 matrix (whitespace-separated)
  - Each frame folder /<frame_id>/keyframes.yml contains a mapping with key `cam_in_ob` which is a 16-element list (row-major 4x4)
- - image files are under `color/` and masks under `mask/` with matching names; depth under `depth/` (if present)
+ - image files are under `images/` and masks under `masks/` with matching names; depth under `depth/` (if present)
 """
 import argparse
 import json
@@ -35,7 +35,9 @@ def read_cam_K(path):
 def find_frame_dirs(scene_dir):
     # frame dirs appear to be numeric timestamps; collect directories with numeric names
     dirs = []
-    for p in scene_dir.iterdir():
+    if not Path(scene_dir).exists():
+        return dirs
+    for p in Path(scene_dir).iterdir():
         if p.is_dir() and p.name.isdigit():
             dirs.append(p)
     dirs.sort()
@@ -87,103 +89,180 @@ def read_keyframe_yaml(yaml_path):
     return result
 
 
+def read_poses_txt(txt_path):
+    """Read a text file containing row-major 4x4 matrices stacked (4 lines per matrix or whitespace separated)
+    Return a list of 4x4 numpy arrays in order.
+    """
+    with open(txt_path, 'r') as f:
+        txt = f.read()
+    import re
+    nums = re.findall(r"[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?", txt)
+    vals = [float(x) for x in nums]
+    if len(vals) % 16 != 0:
+        raise ValueError(f'poses_after_nerf.txt does not contain a multiple of 16 floats: {txt_path} (found {len(vals)})')
+    mats = []
+    for i in range(0, len(vals), 16):
+        arr = np.array(vals[i:i+16], dtype=float).reshape((4,4))
+        mats.append(arr)
+    return mats
+
+
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--data_dir', help='path to scene folder e.g. output/*/')
-    p.add_argument('--out', default='camera.json', help='output json file')
+    p.add_argument('--object_name', type=str, required=True, help='name of the object/scene, e.g. usb_01')
     args = p.parse_args()
 
-    data_dir = Path(args.data_dir)
-    if not data_dir.exists():
-        raise SystemExit(f'scene dir not found: {data_dir}')
-
-    camk_path = data_dir / 'cam_K.txt'
+    # Dataset dir used for intrinsics and image/mask/depth lookup
+    dataset_dir = Path('datasets') / args.object_name
+    camk_path = dataset_dir / 'cam_K.txt'
     if not camk_path.exists():
-        raise SystemExit(f'cam_K.txt not found in {data_dir}')
+        # fallback: try to find in output/scene as well
+        # we'll attempt to resolve later per-part if needed
+        pass
 
-    K = read_cam_K(camk_path)
-    fx = float(K[0,0]); fy = float(K[1,1]); cx = float(K[0,2]); cy = float(K[1,2])
+    # Choose output root: prefer 'output', fallback to 'outputs'
+    root_out_dir = Path('output')
+    if not root_out_dir.exists():
+        alt = Path('outputs')
+        root_out_dir = alt if alt.exists() else Path('output')
 
-    frames = []
-    last_dir = get_last_frame_dir(data_dir)
-    if last_dir is None:
-        raise SystemExit('No numeric frame subdirectories found in scene dir')
+    # Iterate two parts
+    for part_idx in range(2):
+        scene_root = root_out_dir / args.object_name / f'part_{part_idx:01d}'
+        if not scene_root.exists():
+            # If the part directory doesn't exist, skip silently to keep behavior concise
+            continue
 
-    # read keyframes.yml in the last directory (user said the YAML is inside that subfolder)
-    kf_yaml = last_dir / 'keyframes.yml'
-    if not kf_yaml.exists():
-        # try parent-level keyframes.yml as fallback
-        kf_yaml = data_dir / 'keyframes.yml'
-        if not kf_yaml.exists():
-            raise SystemExit(f'No keyframes.yml found in {last_dir} or {data_dir}')
+        # Resolve intrinsics K
+        K = None
+        if camk_path.exists():
+            K = read_cam_K(camk_path)
+        else:
+            # try in scene_root or last frame dir
+            if (scene_root / 'cam_K.txt').exists():
+                K = read_cam_K(scene_root / 'cam_K.txt')
+            else:
+                last_candidate = get_last_frame_dir(scene_root)
+                if last_candidate is not None and (last_candidate / 'cam_K.txt').exists():
+                    K = read_cam_K(last_candidate / 'cam_K.txt')
+        if K is None:
+            # cannot find K, skip this part
+            continue
+        fx = float(K[0,0]); fy = float(K[1,1]); cx = float(K[0,2]); cy = float(K[1,2])
 
-    keyframes = read_keyframe_yaml(kf_yaml)
-    if not keyframes:
-        raise SystemExit(f'No keyframe entries found in {kf_yaml}')
+        frames = []
+        last_dir = get_last_frame_dir(scene_root)
+        if last_dir is None:
+            # No numeric subdirs, skip
+            continue
 
-    # directories for assets
-    color_dir = data_dir / 'color'
-    mask_dir = data_dir / 'mask'
-    depth_dir = data_dir / 'depth'
-    # helper: find depth file preferring .png, then .npz, etc.
-    def find_depth_file(scene_dir, fid):
-        ddir = scene_dir / 'depth'
-        exts = ['.png', '.npz', '.npy', '.exr', '.pfm', '.tif', '.tiff']
-        for e in exts:
-            p = ddir / (fid + e)
-            if p.exists():
-                return p
-        # fallback: any file starting with fid
-        if ddir.exists():
-            gl = list(ddir.glob(f'{fid}*'))
-            if gl:
-                return gl[0]
-        return None
+        # Prefer poses_after_nerf.txt: check last numeric dir first, otherwise search other numeric dirs (from newest to oldest)
+        poses_txt = last_dir / 'poses_after_nerf.txt'
+        keyframes = {}
+        used_poses_dir = None
+        if not poses_txt.exists():
+            # search other numeric dirs (newest first)
+            for d in reversed(find_frame_dirs(scene_root)):
+                ptxt = d / 'poses_after_nerf.txt'
+                if ptxt.exists():
+                    poses_txt = ptxt
+                    used_poses_dir = d
+                    break
 
-    # iterate in sorted order of keyframe names
-    for k in sorted(keyframes.keys()):
-        pose = keyframes[k]
-        # try to infer frame id from key name: keyframe_00012 -> 00012
-        fid = ''.join([c for c in k if c.isdigit()]) or k
+        if poses_txt.exists():
+            mats = read_poses_txt(poses_txt)
+            for i, M in enumerate(mats):
+                name = f'keyframe_{i:05d}'
+                keyframes[name] = M
+        else:
+            # read keyframes.yml in the last directory (user said the YAML is inside that subfolder)
+            kf_yaml = last_dir / 'keyframes.yml'
+            if not kf_yaml.exists():
+                # try parent-level keyframes.yml as fallback
+                kf_yaml = scene_root / 'keyframes.yml'
+                if not kf_yaml.exists():
+                    # nothing to do for this part
+                    continue
+            keyframes = read_keyframe_yaml(kf_yaml)
+            if not keyframes:
+                # nothing to do for this part
+                continue
 
-        img_name = f'{fid}.png'
-        img_path = color_dir / img_name
-        mask_path = mask_dir / img_name
+        # directories for assets (under dataset dir)
+        color_dir = dataset_dir / 'images'
+        # prefer part-specific mask dir (mask_0 / mask_1), then mask, then masks
+        mask_dir_candidates = [f'mask_{part_idx}', 'mask', 'masks', 'mask_0', 'mask_1']
+        mask_dir = None
+        for d in mask_dir_candidates:
+            pdir = dataset_dir / d
+            if pdir.exists():
+                mask_dir = pdir
+                break
+        if mask_dir is None:
+            mask_dir = dataset_dir / f'mask_{part_idx}'
 
-        depth_file = find_depth_file(data_dir, fid)
+        # helper: find depth file preferring .npz first, then .npy, then images
+        def find_depth_file(scene_dir, fid):
+            ddir = scene_dir / 'depth'
+            exts = ['.npz', '.npy', '.png', '.exr', '.pfm', '.tif', '.tiff']
+            for e in exts:
+                p = ddir / (fid + e)
+                if p.exists():
+                    return p
+            # fallback: any file starting with fid
+            if ddir.exists():
+                gl = list(ddir.glob(f'{fid}*'))
+                if gl:
+                    return gl[0]
+            return None
 
-        rel_img = str(img_path.relative_to(data_dir)) if img_path.exists() else str(img_path)
-        rel_mask = str(mask_path.relative_to(data_dir)) if mask_path.exists() else (str(mask_path) if mask_path.exists() else '')
-        rel_depth = str(depth_file.relative_to(data_dir)) if (depth_file is not None) else ''
+        # iterate in sorted order of keyframe names, infer fid from key name (e.g., keyframe_00012 -> 00012)
+        for k in sorted(keyframes.keys()):
+            pose = keyframes[k]
+            fid = ''.join([c for c in k if c.isdigit()]) or k
 
-        T = pose.tolist()
-        frame_entry = {
-            'file_path': rel_img,
-            'mask_path': rel_mask,
-            'depth_path': rel_depth,
-            'transform_matrix': T,
-            'fl_x': fx,
-            'fl_y': fy,
-            'cx': cx,
-            'cy': cy,
-            'w': int(2*cx),
-            'h': int(2*cy),
-            'k1': 0.0,
-            'k2': 0.0,
-            'p1': 0.0,
-            'p2': 0.0,
+            img_name = f'{fid}.png'
+            img_path = color_dir / img_name
+            mask_path = mask_dir / img_name
+
+            depth_file = find_depth_file(dataset_dir, fid)
+
+            # Always store dataset-relative paths in JSON
+            rel_img = str(img_path.relative_to(dataset_dir))
+            rel_mask = str(mask_path.relative_to(dataset_dir))
+            rel_depth = str(depth_file.relative_to(dataset_dir)) if (depth_file is not None) else ''
+
+            T = pose.tolist()
+            frame_entry = {
+                'file_path': rel_img,
+                'mask_path': rel_mask,
+                'depth_path': rel_depth,
+                'transform_matrix': T,
+                'fl_x': fx,
+                'fl_y': fy,
+                'cx': cx,
+                'cy': cy,
+                'w': int(2*cx),
+                'h': int(2*cy),
+                'k1': 0.0,
+                'k2': 0.0,
+                'p1': 0.0,
+                'p2': 0.0,
+            }
+            frames.append(frame_entry)
+
+        out = {
+            'camera_model': 'PINHOLE',
+            'frames': frames
         }
-        frames.append(frame_entry)
 
-    out = {
-        'camera_model': 'PINHOLE',
-        'frames': frames
-    }
+        # ensure part directory exists and write camera.json there
+        scene_root.mkdir(parents=True, exist_ok=True)
+        out_path = scene_root / f'transforms_{part_idx}.json'
+        with open(out_path, 'w') as f:
+            json.dump(out, f, indent=4)
 
-    with open(args.out, 'w') as f:
-        json.dump(out, f, indent=4)
-
-    print(f'Wrote {args.out} with {len(frames)} frames')
+        print(f'Wrote with {len(frames)} frames')
 
 
 if __name__ == '__main__':
