@@ -788,7 +788,7 @@ class BundleSdf:
 
 
 
-  def run_global_nerf(self, reader=None, get_texture=False, tex_res=1024, mask_args=None):
+  def run_global_nerf(self, reader=None, get_texture=False, tex_res=1024, args=None):
     '''
     @reader: data reader, sometimes we want to use the full resolution raw image
     '''
@@ -830,8 +830,8 @@ class BundleSdf:
         id = reader.id_strs.index(frame_id)
         rgbs.append(reader.get_color(id))
         depths.append(reader.get_depth(id))
-        if mask_args is not None:
-          masks.append(reader.get_mask(id, mask_args))
+        if args is not None:
+          masks.append(reader.get_mask(id, args))
         else:
           masks.append(reader.get_mask(id))
       else:
