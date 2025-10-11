@@ -215,7 +215,7 @@ if __name__=="__main__":
   parser.add_argument('--use_gui', type=int, default=1)
   parser.add_argument('--stride', type=int, default=1, help='interval of frames to run; 1 means using every frame')
   parser.add_argument('--debug_level', type=int, default=2, help='higher means more logging')
-  parser.add_argument('--mask', type=str, default='low', help='low/high')
+  parser.add_argument('--mask', type=str, default='0', help='0/1')
   args = parser.parse_args()
 
   if args.mode=='run_video':
