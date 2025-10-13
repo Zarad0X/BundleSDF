@@ -18,5 +18,5 @@ echo "PYTHONPATH: $PYTHONPATH"
 echo "Testing PyTorch import..."
 python3 -c "import torch; print('PyTorch version:', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
 
-#cd ${ROOT}/mycuda && rm -rf build *egg* && python3 -m pip install -e . --no-build-isolation
-cd ${ROOT}/BundleTrack && rm -rf build && mkdir build && cd build && /usr/bin/cmake .. -DFLANN_INCLUDE_DIR=/usr/include/flann -DFLANN_LIBRARY=/usr/lib/x86_64-linux-gnu/libflann.so -DCMAKE_PREFIX_PATH=/usr/local/lib/cmake/yaml-cpp && make -j11
+cd ${ROOT}/mycuda && rm -rf build *egg* && python3 -m pip install -e . --no-build-isolation
+cd ${ROOT}/BundleTrack && rm -rf build && mkdir build && cd build && /usr/bin/cmake .. -DFLANN_INCLUDE_DIR=/usr/include/flann -DFLANN_LIBRARY=/usr/lib/x86_64-linux-gnu/libflann.so -DCMAKE_PREFIX_PATH=/usr/local/lib/cmake/yaml-cpp -Dpybind11_DIR=$(python3 -m pybind11 --cmakedir) && make -j11

@@ -1,4 +1,5 @@
-
+conda deactivate
+conda deactivate
 unset CPLUS_INCLUDE_PATH
 unset C_INCLUDE_PATH
 unset CMAKE_INCLUDE_PATH
@@ -24,12 +25,13 @@ make
 sudo make install
 cd ..
 rm -rf cmake-3.25.3 cmake-3.25.3.tar.gz
+hash -r
 
 wget https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz
 tar xf eigen-3.4.0.tar.gz
 cd eigen-3.4.0
 mkdir build && cd build
-cmake ..
+/usr/local/bin/cmake ..
 sudo make install
 cd ../..
 rm -rf eigen-3.4.0 eigen-3.4.0.tar.gz
@@ -84,9 +86,9 @@ sudo make install
 cd ../..
 rm -rf yaml-cpp
 
+conda activate mono-artgs
 pip3 install --upgrade pip setuptools wheel
-pip3 install torch==2.6.0 torchvision==0.21.0 torchaudio
-pip3 install --no-cache-dir kaolin==0.17.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.5.1_cu124.html
+pip3 install --no-cache-dir kaolin==0.17.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.4.0_cu118.html
 pip3 install "git+https://github.com/facebookresearch/pytorch3d.git@stable"
 pip3 install --break-system-packages --force-reinstall blinker
 pip3 install trimesh wandb matplotlib imageio tqdm open3d ruamel.yaml sacred kornia pymongo pyrender jupyterlab ninja "Cython>=0.29.37" yacs
@@ -104,3 +106,28 @@ python3 -c "import imageio; imageio.plugins.freeimage.download()"
 
 
 export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
+
+
+
+ROOT="reconstruction/BundleSDF"
+
+# Set PyTorch library path
+export LD_LIBRARY_PATH="/usr/local/lib/python3.10/dist-packages/torch/lib:$LD_LIBRARY_PATH"
+export TORCH_LIBRARIES="/usr/local/lib/python3.10/dist-packages/torch/lib"
+
+# Additional PyTorch environment variables
+export TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6;9.0"
+export FORCE_CUDA=1
+export TORCH_EXTENSIONS_DIR="/tmp/torch_extensions"
+
+# Ensure PyTorch can be found
+export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
+
+# Print debug info
+echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+echo "PYTHONPATH: $PYTHONPATH"
+echo "Testing PyTorch import..."
+python3 -c "import torch; print('PyTorch version:', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
+
+cd ${ROOT}/mycuda && rm -rf build *egg* && python3 -m pip install -e . --no-build-isolation
+cd ${ROOT}/BundleTrack && rm -rf build && mkdir build && cd build && /usr/bin/cmake .. -DFLANN_INCLUDE_DIR=/usr/include/flann -DFLANN_LIBRARY=/usr/lib/x86_64-linux-gnu/libflann.so -DCMAKE_PREFIX_PATH=/usr/local/lib/cmake/yaml-cpp -Dpybind11_DIR=$(python3 -m pybind11 --cmakedir) && make -j11
