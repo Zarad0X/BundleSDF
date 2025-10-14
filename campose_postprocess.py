@@ -145,21 +145,21 @@ def main():
                     used_poses_dir = d
                     break
 
-        if os.path.exists(poses_txt):
-            mats = read_poses_txt(poses_txt)
-            for i, M in enumerate(mats):
-                name = f'keyframe_{i:05d}'
-                keyframes[name] = M
-        else:
-            # read keyframes.yml in the last directory (user said the YAML is inside that subfolder)
-            kf_yaml = os.path.join(last_dir, 'keyframes.yml')
+        # if os.path.exists(poses_txt):
+        #     mats = read_poses_txt(poses_txt)
+        #     for i, M in enumerate(mats):
+        #         name = f'keyframe_{i:05d}'
+        #         keyframes[name] = M
+        # else:
+        # read keyframes.yml in the last directory (user said the YAML is inside that subfolder)
+        kf_yaml = os.path.join(last_dir, 'keyframes.yml')
+        if not os.path.exists(kf_yaml):
+            # try parent-level keyframes.yml as fallback
+            kf_yaml = os.path.join(scene_root, 'keyframes.yml')
             if not os.path.exists(kf_yaml):
-                # try parent-level keyframes.yml as fallback
-                kf_yaml = os.path.join(scene_root, 'keyframes.yml')
-                if not os.path.exists(kf_yaml):
-                    # nothing to do for this part
-                    continue
-            keyframes = read_keyframe_yaml(kf_yaml)
+                # nothing to do for this part
+                continue
+        keyframes = read_keyframe_yaml(kf_yaml)
 
         # iterate in sorted order of keyframe names, infer fid from key name (e.g., keyframe_00012 -> 00012)
         for k in sorted(keyframes.keys()):
@@ -168,9 +168,9 @@ def main():
 
             T = pose.tolist()
             frame_entry = {
-                'file_path': f"{dataset_dir}/images/{fid}.png",
-                'mask_path': f"{dataset_dir}/mask_{part_idx:01d}/{fid}.png",
-                'depth_path': f"{dataset_dir}/depth/{fid}.npz",
+                'file_path': f"images/{fid}.png",
+                'mask_path': f"mask_{part_idx:01d}/{fid}.png",
+                'depth_path': f"depth/{fid}.npz",
                 'transform_matrix': T,
                 'fl_x': fx,
                 'fl_y': fy,
