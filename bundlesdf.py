@@ -380,9 +380,13 @@ def run_nerf(p_dict, kf_to_nerf_list, lock, cfg_nerf, translation, sc_factor, st
 
     optimized_cvcam_in_obs,offset = get_optimized_poses_in_real_world(poses,nerf.models['pose_array'],cfg_nerf['sc_factor'],cfg_nerf['translation'])
 
-    logging.info("Getting mesh")
-    mesh = nerf.extract_mesh(isolevel=0,voxel_size=cfg_nerf['mesh_resolution'])
-    mesh = mesh_to_real_world(mesh, pose_offset=offset, translation=nerf.cfg['translation'], sc_factor=nerf.cfg['sc_factor'])
+    mesh = None
+    if cfg_nerf.get('extract_mesh', True):
+      logging.info("Getting mesh")
+      mesh = nerf.extract_mesh(isolevel=0,voxel_size=cfg_nerf['mesh_resolution'])
+      mesh = mesh_to_real_world(mesh, pose_offset=offset, translation=nerf.cfg['translation'], sc_factor=nerf.cfg['sc_factor'])
+    else:
+      logging.info("Skipping mesh extraction (extract_mesh=False)")
 
     with lock:
       p_dict['optimized_cvcam_in_obs'] = optimized_cvcam_in_obs
@@ -902,26 +906,29 @@ class BundleSdf:
     # mesh_files = sorted(glob.glob(f"{self.debug_dir}/final/nerf/step_*_mesh_normalized_space.obj"))
     # mesh = trimesh.load(mesh_files[-1])
 
-    mesh,sigma,query_pts = nerf.extract_mesh(voxel_size=self.cfg_nerf['mesh_resolution'],isolevel=0, return_sigma=True)
-    mesh.merge_vertices()
-    ms = trimesh_split(mesh, min_edge=100)
-    largest_size = 0
-    largest = None
-    for m in ms:
-      # mean = m.vertices.mean(axis=0)
-      # if np.linalg.norm(mean)>=0.1*nerf.cfg['sc_factor']:
-      #   continue
-      if m.vertices.shape[0]>largest_size:
-        largest_size = m.vertices.shape[0]
-        largest = m
-    mesh = largest
-    mesh.export(f'{self.debug_dir}/mesh_cleaned.obj')
+    if self.cfg_nerf.get('extract_mesh', True):
+      mesh,sigma,query_pts = nerf.extract_mesh(voxel_size=self.cfg_nerf['mesh_resolution'],isolevel=0, return_sigma=True)
+      mesh.merge_vertices()
+      ms = trimesh_split(mesh, min_edge=100)
+      largest_size = 0
+      largest = None
+      for m in ms:
+        # mean = m.vertices.mean(axis=0)
+        # if np.linalg.norm(mean)>=0.1*nerf.cfg['sc_factor']:
+        #   continue
+        if m.vertices.shape[0]>largest_size:
+          largest_size = m.vertices.shape[0]
+          largest = m
+      mesh = largest
+      mesh.export(f'{self.debug_dir}/mesh_cleaned.obj')
 
-    if get_texture:
-      mesh = nerf.mesh_texture_from_train_images(mesh, rgbs_raw=rgbs_raw, train_texture=False, tex_res=tex_res)
+      if get_texture:
+        mesh = nerf.mesh_texture_from_train_images(mesh, rgbs_raw=rgbs_raw, train_texture=False, tex_res=tex_res)
 
-    mesh = mesh_to_real_world(mesh, pose_offset=offset, translation=self.cfg_nerf['translation'], sc_factor=self.cfg_nerf['sc_factor'])
-    mesh.export(f'{self.debug_dir}/textured_mesh.obj')
+      mesh = mesh_to_real_world(mesh, pose_offset=offset, translation=self.cfg_nerf['translation'], sc_factor=self.cfg_nerf['sc_factor'])
+      mesh.export(f'{self.debug_dir}/textured_mesh.obj')
+    else:
+      logging.info("Skipping mesh extraction (extract_mesh=False)")
 
 
 

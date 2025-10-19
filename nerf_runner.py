@@ -821,7 +821,7 @@ class NerfRunner:
         for k in metrics.keys():
           self._run.log_scalar(k,metrics[k],self.global_step)
 
-    if self.global_step % self.cfg['i_mesh'] == 0 and self.global_step > 0:
+    if self.global_step % self.cfg['i_mesh'] == 0 and self.global_step > 0 and self.cfg.get('extract_mesh', True):
       with torch.no_grad():
         model = self.models['model_fine'] if self.models['model_fine'] is not None else self.models['model']
         mesh = self.extract_mesh(isolevel=0, voxel_size=self.cfg['mesh_resolution'])
