@@ -33,7 +33,6 @@ def run_one_video(video_dir='/home/bowen/debug/2022-11-18-15-10-24_milk', out_fo
   cfg_bundletrack['feature_corres']['map_points'] = True
   cfg_bundletrack['feature_corres']['resize'] = 400
   cfg_bundletrack['feature_corres']['rematch_after_nerf'] = True
-  cfg_bundletrack['keyframe']['min_rot'] = 5
   cfg_bundletrack['ransac']['inlier_dist'] = 0.01
   cfg_bundletrack['ransac']['inlier_normal_angle'] = 20
   cfg_bundletrack['ransac']['max_trans_neighbor'] = 0.02

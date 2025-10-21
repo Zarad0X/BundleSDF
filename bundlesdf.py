@@ -8,6 +8,7 @@
 
 
 from Utils import *
+import glob
 from nerf_runner import *
 from tool import *
 code_dir = os.path.dirname(os.path.realpath(__file__))
@@ -401,7 +402,9 @@ def run_nerf(p_dict, kf_to_nerf_list, lock, cfg_nerf, translation, sc_factor, st
 
     ####### Log
     if SPDLOG>=2:
-      os.system(f"cp -r {cfg_nerf['save_dir']}/image_step_*.png  {out_dir}/")
+      step_imgs = glob.glob(f"{cfg_nerf['save_dir']}/image_step_*.png")
+      if len(step_imgs)>0:
+        os.system(f"cp -r {cfg_nerf['save_dir']}/image_step_*.png  {out_dir}/")
       with open(f"{out_dir}/config.yml",'w') as ff:
         tmp = copy.deepcopy(cfg_nerf)
         for k in tmp.keys():
@@ -607,7 +610,7 @@ class BundleSdf:
       visibles = np.array(visibles)
       ids = np.argsort(visibles)[::-1]
       found = False
-      pdb.set_trace()
+      # pdb.set_trace()
       for id in ids:
         kf = self.bundler._keyframes[id]
         logging.info(f"trying new ref frame {kf._id_str}")
