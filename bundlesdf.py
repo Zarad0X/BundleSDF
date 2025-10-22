@@ -514,6 +514,7 @@ class BundleSdf:
   def find_corres(self, frame_pairs):
     logging.info(f"frame_pairs: {len(frame_pairs)}")
     is_match_ref = len(frame_pairs)==1 and frame_pairs[0][0]._ref_frame_id==frame_pairs[0][1]._id and self.bundler._newframe==frame_pairs[0][0]
+    force_no_fail = bool(self.cfg_track.get('fail_policy', {}).get('force_no_fail', 0))
 
     imgs, tfs, query_pairs = self.bundler._fm.getProcessedImagePairs(frame_pairs)
     imgs = np.array([np.array(img) for img in imgs])
@@ -534,9 +535,12 @@ class BundleSdf:
 
     if is_match_ref and len(self.bundler._fm._raw_matches[frame_pairs[0]])<min_match_with_ref:
       self.bundler._fm._raw_matches[frame_pairs[0]] = []
-      self.bundler._newframe._status = my_cpp.Frame.FAIL
-      logging.info(f'frame {self.bundler._newframe._id_str} mark FAIL, due to no matching')
-      return
+      if not force_no_fail:
+        self.bundler._newframe._status = my_cpp.Frame.FAIL
+        logging.info(f'frame {self.bundler._newframe._id_str} mark FAIL, due to no matching')
+        return
+      else:
+        logging.warning(f"force_no_fail enabled: continue without sufficient matches for {self.bundler._newframe._id_str}")
 
     self.bundler._fm.rawMatchesToCorres(query_pairs)
 
@@ -552,6 +556,7 @@ class BundleSdf:
 
   def process_new_frame(self, frame):
     logging.info(f"process frame {frame._id_str}")
+    force_no_fail = bool(self.cfg_track.get('fail_policy', {}).get('force_no_fail', 0))
 
     self.bundler._newframe = frame
     os.makedirs(self.debug_dir, exist_ok=True)
@@ -570,10 +575,13 @@ class BundleSdf:
 
     n_fg = (np.array(frame._fg_mask)>0).sum()
     if n_fg<100:
-      logging.info(f"Frame {frame._id_str} cloud is empty, marked FAIL, roi={n_fg}")
-      frame._status = my_cpp.Frame.FAIL;
-      self.bundler.forgetFrame(frame)
-      return
+      if not force_no_fail:
+        logging.info(f"Frame {frame._id_str} cloud is empty, marked FAIL, roi={n_fg}")
+        frame._status = my_cpp.Frame.FAIL;
+        self.bundler.forgetFrame(frame)
+        return
+      else:
+        logging.warning(f"force_no_fail enabled: skip empty cloud check, roi={n_fg}")
 
     if self.cfg_track["depth_processing"]["denoise_cloud"]:
       frame.pointCloudDenoise()
@@ -581,10 +589,13 @@ class BundleSdf:
     n_valid = frame.countValidPoints()
     n_valid_first = self.bundler._firstframe.countValidPoints()
     if n_valid<n_valid_first/40.0:
-      logging.info(f"frame _cloud_down points#: {n_valid} too small compared to first frame points# {n_valid_first}, mark as FAIL")
-      frame._status = my_cpp.Frame.FAIL
-      self.bundler.forgetFrame(frame)
-      return
+      if not force_no_fail:
+        logging.info(f"frame _cloud_down points#: {n_valid} too small compared to first frame points# {n_valid_first}, mark as FAIL")
+        frame._status = my_cpp.Frame.FAIL
+        self.bundler.forgetFrame(frame)
+        return
+      else:
+        logging.warning(f"force_no_fail enabled: skip valid-point ratio check ({n_valid} vs {n_valid_first})")
 
     if frame._id==0:
       self.bundler.checkAndAddKeyframe(frame)   # First frame is always keyframe
@@ -597,9 +608,13 @@ class BundleSdf:
     matches = self.bundler._fm._matches[(frame, ref_frame)]
 
     if frame._status==my_cpp.Frame.FAIL:
-      logging.info(f"find corres fail, mark {frame._id_str} as FAIL")
-      self.bundler.forgetFrame(frame)
-      return
+      if not force_no_fail:
+        logging.info(f"find corres fail, mark {frame._id_str} as FAIL")
+        self.bundler.forgetFrame(frame)
+        return
+      else:
+        logging.warning(f"force_no_fail enabled: reset FAIL status for {frame._id_str}")
+        frame._status = my_cpp.Frame.OTHER
 
     matches = self.bundler._fm._matches[(frame, ref_frame)]
     if len(matches)<min_match_with_ref:
@@ -627,13 +642,20 @@ class BundleSdf:
           break
 
       if not found:
-        frame._status = my_cpp.Frame.FAIL
-        logging.info(f"frame {frame._id_str} has not suitable ref_frame, mark as FAIL")
-        self.bundler.forgetFrame(frame)
-        return
+        if not force_no_fail:
+          frame._status = my_cpp.Frame.FAIL
+          logging.info(f"frame {frame._id_str} has not suitable ref_frame, mark as FAIL")
+          self.bundler.forgetFrame(frame)
+          return
+        else:
+          logging.warning(f"force_no_fail enabled: proceed without suitable ref_frame for {frame._id_str}")
 
     logging.info(f"frame {frame._id_str} pose update before\n{frame._pose_in_model.round(3)}")
-    offset = self.bundler._fm.procrustesByCorrespondence(frame, ref_frame)
+    # If insufficient matches and force_no_fail, skip pose update (use identity)
+    if force_no_fail and len(matches) < min_match_with_ref:
+      offset = np.eye(4)
+    else:
+      offset = self.bundler._fm.procrustesByCorrespondence(frame, ref_frame)
     frame._pose_in_model = offset@frame._pose_in_model
     logging.info(f"frame {frame._id_str} pose update after\n{frame._pose_in_model.round(3)}")
 
@@ -655,15 +677,23 @@ class BundleSdf:
     pairs = self.bundler.getFeatureMatchPairs(self.bundler._local_frames)
     self.find_corres(pairs)
     if frame._status==my_cpp.Frame.FAIL:
-      self.bundler.forgetFrame(frame)
-      return
+      if not force_no_fail:
+        self.bundler.forgetFrame(frame)
+        return
+      else:
+        logging.warning(f"force_no_fail enabled: reset FAIL after BA for {frame._id_str}")
+        frame._status = my_cpp.Frame.OTHER
 
     find_matches = False
     self.bundler.optimizeGPU(local_frames, find_matches)
 
     if frame._status==my_cpp.Frame.FAIL:
-      self.bundler.forgetFrame(frame)
-      return
+      if not force_no_fail:
+        self.bundler.forgetFrame(frame)
+        return
+      else:
+        logging.warning(f"force_no_fail enabled: reset FAIL before add keyframe for {frame._id_str}")
+        frame._status = my_cpp.Frame.OTHER
 
     self.bundler.checkAndAddKeyframe(frame)
 
@@ -730,16 +760,27 @@ class BundleSdf:
           for f in self.bundler._keyframes:
             ff.write(f"{f._id_str}\n")
 
-      ############# Wait for sync
+      ############# Wait for sync (bounded and safe)
+      wait_start_ts = time.time()
+      max_wait_seconds = float(os.environ.get('NERF_SYNC_TIMEOUT_S', '3'))
       while 1:
         with self.lock:
           running = self.p_dict['running']
           nerf_num_frames = self.p_dict['nerf_num_frames']
         if not running:
           break
+        # If NeRF worker has died, stop waiting to avoid deadlock
+        if not self.p_nerf.is_alive():
+          logging.warning("NeRF worker not alive. Skipping sync wait.")
+          with self.lock:
+            self.p_dict['running'] = False
+          break
+        # Enforce backlog bound with a timeout for responsiveness
         if len(self.bundler._keyframes)-nerf_num_frames>=self.cfg_nerf['sync_max_delay']:
+          if time.time() - wait_start_ts > max_wait_seconds:
+            logging.warning(f"Sync wait timeout {max_wait_seconds}s exceeded (keyframes={len(self.bundler._keyframes)}, nerf_num_frames={nerf_num_frames}). Proceeding.")
+            break
           time.sleep(0.01)
-          # logging.info(f"wait for sync len(self.bundler._keyframes):{len(self.bundler._keyframes)}, nerf_num_frames:{nerf_num_frames}")
           continue
         break
 

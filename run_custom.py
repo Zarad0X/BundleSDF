@@ -41,6 +41,13 @@ def run_one_video(video_dir='/home/bowen/debug/2022-11-18-15-10-24_milk', out_fo
   cfg_bundletrack['ransac']['max_rot_no_neighbor'] = 10
   cfg_bundletrack['p2p']['max_dist'] = 0.02
   cfg_bundletrack['p2p']['max_normal_angle'] = 45
+  # Force every frame to be a keyframe and use all frames in BA
+  cfg_bundletrack.setdefault('keyframe', {})
+  cfg_bundletrack['keyframe']['force_all'] = 1
+  cfg_bundletrack.setdefault('bundle', {})
+  cfg_bundletrack['bundle']['use_all_frames'] = 1
+  cfg_bundletrack.setdefault('fail_policy', {})
+  cfg_bundletrack['fail_policy']['force_no_fail'] = 1
   cfg_track_dir = f'{out_folder}/config_bundletrack.yml'
   yaml.dump(cfg_bundletrack, open(cfg_track_dir,'w'))
 
