@@ -58,8 +58,9 @@ keyframe:
   min_interval: 1
   min_feat_num: 0
   min_trans: 0
-  min_rot: 5
+  min_rot: 0.1
   min_visible: 1
+  force_all: 0
 
 
 sift:

@@ -21,6 +21,8 @@ def run_one_video(video_dir='/home/bowen/debug/2022-11-18-15-10-24_milk', out_fo
 
   cfg_bundletrack = yaml.load(open(f"{code_dir}/BundleTrack/config_ho3d.yml",'r'))
   cfg_bundletrack['SPDLOG'] = int(args.debug_level)
+  # Ensure data_dir equals the input video_dir so that BundleSDF can locate masks/<frame>.png, cam_K.txt, etc.
+  cfg_bundletrack['data_dir'] = video_dir
   cfg_bundletrack['depth_processing']["percentile"] = 95
   cfg_bundletrack['erode_mask'] = 3
   cfg_bundletrack['debug_dir'] = out_folder+'/'
@@ -33,6 +35,8 @@ def run_one_video(video_dir='/home/bowen/debug/2022-11-18-15-10-24_milk', out_fo
   cfg_bundletrack['feature_corres']['map_points'] = True
   cfg_bundletrack['feature_corres']['resize'] = 400
   cfg_bundletrack['feature_corres']['rematch_after_nerf'] = True
+  cfg_bundletrack['feature_corres']['enable_fullmask_fallback'] = 1
+  cfg_bundletrack['feature_corres']['fallback_min_match_with_ref'] = 10
   cfg_bundletrack['ransac']['inlier_dist'] = 0.01
   cfg_bundletrack['ransac']['inlier_normal_angle'] = 20
   cfg_bundletrack['ransac']['max_trans_neighbor'] = 0.02

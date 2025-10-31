@@ -532,15 +532,85 @@ class BundleSdf:
       self.bundler._fm._raw_matches[query_pairs[i_pair]] = cur_corres.round().astype(np.uint16)
 
     min_match_with_ref = self.cfg_track["feature_corres"]["min_match_with_ref"]
+    enable_fallback = bool(self.cfg_track["feature_corres"].get("enable_fullmask_fallback", 1))
+    fallback_min = int(self.cfg_track["feature_corres"].get("fallback_min_match_with_ref", min_match_with_ref))
 
-    if is_match_ref and len(self.bundler._fm._raw_matches[frame_pairs[0]])<min_match_with_ref:
-      self.bundler._fm._raw_matches[frame_pairs[0]] = []
-      if not force_no_fail:
-        self.bundler._newframe._status = my_cpp.Frame.FAIL
-        logging.info(f'frame {self.bundler._newframe._id_str} mark FAIL, due to no matching')
-        return
-      else:
-        logging.warning(f"force_no_fail enabled: continue without sufficient matches for {self.bundler._newframe._id_str}")
+    # Fallback: if first ref matching is insufficient, retry LoFTR using full masks (ignore part mask)
+    if is_match_ref and len(self.bundler._fm._raw_matches[frame_pairs[0]]) < min_match_with_ref and enable_fallback:
+      logging.warning("Low matches with part mask, retry LoFTR with dataset full mask for the ref pair")
+      A, B = frame_pairs[0]
+      # Backup masks (strict)
+      maskA_orig = np.array(A._fg_mask).copy()
+      maskB_orig = np.array(B._fg_mask).copy()
+      # Build dataset full masks from datasets/<object>/masks/<id>.png
+      def _load_dataset_mask(id_str, h, w):
+        # Strict: run_custom.py writes cfg_bundletrack['data_dir']=video_dir, so bundler.yml must carry it
+        ds_dir = self.bundler.yml["data_dir"].Scalar()
+        mask_dir = os.path.join(ds_dir, "masks")
+        p = os.path.join(mask_dir, f"{id_str}.png")
+        if not os.path.isfile(p):
+            raise FileNotFoundError(f"Dataset mask PNG not found for frame {id_str} under {mask_dir}")
+        m = cv2.imread(p, -1)
+        if m is None:
+            raise RuntimeError(f"Failed to read mask PNG: {p}")
+        if m.ndim == 3:
+            m = m[..., 0]
+        m = (m > 0).astype(np.uint8) * 255
+        return m
+
+      hA, wA = np.array(A._color).shape[:2]
+      mA = _load_dataset_mask(A._id_str, hA, wA)
+      A._fg_mask = my_cpp.cvMat(mA)
+      hB, wB = np.array(B._color).shape[:2]
+      mB = _load_dataset_mask(B._id_str, hB, wB)
+      B._fg_mask = my_cpp.cvMat(mB)
+
+      # Rebuild processed images for this pair and rerun LoFTR
+      imgs_fb, tfs_fb, qp_fb = self.bundler._fm.getProcessedImagePairs([frame_pairs[0]])
+      imgs_fb = np.array([np.array(img) for img in imgs_fb])
+      # If the pair was filtered out due to existing raw_matches, try forcing reprocessing
+      if len(qp_fb) == 0:
+        logging.warning("Fallback preprocessing produced zero pairs (likely due to existing raw_matches); retrying after clearing the pair")
+        prev_raw_pair = self.bundler._fm._raw_matches[frame_pairs[0]] if frame_pairs[0] in self.bundler._fm._raw_matches else None
+        if frame_pairs[0] in self.bundler._fm._raw_matches:
+          del self.bundler._fm._raw_matches[frame_pairs[0]]
+        imgs_fb, tfs_fb, qp_fb = self.bundler._fm.getProcessedImagePairs([frame_pairs[0]])
+        imgs_fb = np.array([np.array(img) for img in imgs_fb])
+        # If still no pairs, skip the fallback gracefully
+        if len(qp_fb) == 0:
+          logging.error("Fallback preprocessing still produced zero pairs; aborting.")
+          if prev_raw_pair is not None:
+            self.bundler._fm._raw_matches[frame_pairs[0]] = prev_raw_pair
+          # Restore original masks before raising
+          A._fg_mask = my_cpp.cvMat(maskA_orig)
+          B._fg_mask = my_cpp.cvMat(maskB_orig)
+          raise RuntimeError("Fallback preprocessing returned unexpected number of pairs")
+        else:
+          # Proceed using the recomputed single pair
+          prev_raw_pair = None  # We will overwrite with new matches
+      # At this point, if we have at least one pair, run LoFTR and update matches
+      if len(qp_fb) >= 1:
+        corres_fb = self.loftr.predict(rgbAs=imgs_fb[::2], rgbBs=imgs_fb[1::2])
+        cur = corres_fb[0][:,:4]
+        tfA = np.array(tfs_fb[0])
+        tfB = np.array(tfs_fb[1])
+        cur[:,:2] = transform_pts(cur[:,:2], np.linalg.inv(tfA))
+        cur[:,2:4] = transform_pts(cur[:,2:4], np.linalg.inv(tfB))
+        self.bundler._fm._raw_matches[frame_pairs[0]] = cur.round().astype(np.uint16)
+        logging.info(f"fallback raw matches: {len(cur)}")
+        # Restore original masks
+        A._fg_mask = my_cpp.cvMat(maskA_orig)
+        B._fg_mask = my_cpp.cvMat(maskB_orig)
+
+      if len(self.bundler._fm._raw_matches[frame_pairs[0]]) < fallback_min:
+        # Still insufficient; respect fail policy
+        self.bundler._fm._raw_matches[frame_pairs[0]] = []
+        if not force_no_fail:
+          self.bundler._newframe._status = my_cpp.Frame.FAIL
+          logging.info(f'frame {self.bundler._newframe._id_str} mark FAIL after fallback, due to no matching')
+          return
+        else:
+          logging.warning(f"force_no_fail enabled: continue without sufficient matches after fallback for {self.bundler._newframe._id_str}")
 
     self.bundler._fm.rawMatchesToCorres(query_pairs)
 
@@ -723,8 +793,11 @@ class BundleSdf:
     if percentile<100:   # Denoise
       logging.info("percentile denoise start")
       valid = (depth>=0.1) & (mask>0)
-      thres = np.percentile(depth[valid], percentile)
-      depth[depth>=thres] = 0
+      if np.any(valid):
+        thres = np.percentile(depth[valid], percentile)
+        depth[depth>=thres] = 0
+      else:
+        logging.warning("percentile denoise skipped: no valid depth under mask")
       logging.info("percentile denoise done")
 
     frame = self.make_frame(color, depth, K, id_str, mask, occ_mask, pose_in_model)
