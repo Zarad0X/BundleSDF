@@ -412,9 +412,11 @@ def run_nerf(p_dict, kf_to_nerf_list, lock, cfg_nerf, translation, sc_factor, st
             tmp[k] = tmp[k].tolist()
         yaml.dump(tmp,ff)
       shutil.copy(f"{out_dir}/config.yml",f"{cfg_nerf['save_dir']}/")
-      np.savetxt(f"{debug_dir}/{frame_id}/poses_after_nerf.txt",np.array(optimized_cvcam_in_obs).reshape(-1,4))
-      mesh.export(f"{cfg_nerf['save_dir']}/mesh_real_world.obj")
+      if mesh is not None:
+        mesh.export(f"{cfg_nerf['save_dir']}/mesh_real_world.obj")
       os.system(f"rm -rf {cfg_nerf['save_dir']}/step_*_mesh_real_world.obj {cfg_nerf['save_dir']}/*frame*ray*.ply && mv {cfg_nerf['save_dir']}/*  {out_dir}/")
+
+    np.savetxt(f"{debug_dir}/{frame_id}/poses_after_nerf.txt",np.array(optimized_cvcam_in_obs).reshape(-1,4))
 
 
 

@@ -1,4 +1,6 @@
 import yaml
+import json
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
@@ -43,6 +45,37 @@ def load_poses_from_txt(txt_path):
         mat = np.array([[float(x) for x in line.split()] for line in mat_lines])
         keyframes[f"pose_{i:03d}"] = mat
     print(f"Loaded {num_poses} poses from {txt_path}")
+    return keyframes
+
+
+def load_transforms_json(json_path):
+    """
+    从 transforms_*.json 读取 frames 中的 transform_matrix，生成 {name: 4x4}。
+    name 优先使用 file_path 提取的帧号，否则使用顺序编号。
+    """
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+    frames = data.get('frames', [])
+    keyframes = {}
+    for i, fr in enumerate(frames):
+        mat = np.array(fr.get('transform_matrix'), dtype=float)
+        # 提取名字：优先 file_path 的数字部分
+        name = f"frame_{i:05d}"
+        fp = fr.get('file_path')
+        if isinstance(fp, str):
+            base = os.path.basename(fp)
+            stem = os.path.splitext(base)[0]
+            if stem.isdigit():
+                name = stem
+            else:
+                # 尝试抽取数字子串
+                digits = ''.join([c for c in stem if c.isdigit()])
+                if digits:
+                    name = digits
+                else:
+                    name = stem
+        keyframes[name] = mat
+    print(f"Loaded {len(keyframes)} frames from {json_path}")
     return keyframes
 
 
@@ -104,8 +137,8 @@ def visualize_cameras(keyframes, output_path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Visualize camera poses from BundleSDF .yml or .txt file")
-    parser.add_argument("--path", required=True, help="Path to the YAML or TXT file containing keyframes/poses")
+    parser = argparse.ArgumentParser(description="Visualize camera poses from BundleSDF keyframes or transforms")
+    parser.add_argument("--path", required=True, help="Path to keyframes.yml, poses_after_nerf.txt, or transforms_*.json")
     parser.add_argument("--out", default="camera_poses.png", help="Output image path (default: camera_poses.png)")
     args = parser.parse_args()
 
@@ -113,8 +146,10 @@ def main():
         keyframes = load_keyframes(args.path)
     elif args.path.endswith(".txt"):
         keyframes = load_poses_from_txt(args.path)
+    elif args.path.endswith(".json"):
+        keyframes = load_transforms_json(args.path)
     else:
-        raise ValueError("Unsupported file type, must be .yml/.yaml or .txt")
+        raise ValueError("Unsupported file type, must be .yml/.yaml, .txt or .json")
 
     if not keyframes:
         print("No pose data found.")

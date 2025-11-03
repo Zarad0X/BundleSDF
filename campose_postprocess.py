@@ -134,10 +134,10 @@ def main():
 
         # Prefer poses_after_nerf.txt: check last numeric dir first, otherwise search other numeric dirs (from newest to oldest)
         poses_txt = os.path.join(last_dir, 'poses_after_nerf.txt')
-        keyframes = {}
         used_poses_dir = None
-        if not os.path.exists(poses_txt):
-            # search other numeric dirs (newest first)
+        if os.path.exists(poses_txt):
+            used_poses_dir = last_dir
+        else:
             for d in reversed(find_frame_dirs(scene_root)):
                 ptxt = os.path.join(d, 'poses_after_nerf.txt')
                 if os.path.exists(ptxt):
@@ -145,25 +145,53 @@ def main():
                     used_poses_dir = d
                     break
 
-        # if os.path.exists(poses_txt):
-        #     mats = read_poses_txt(poses_txt)
-        #     for i, M in enumerate(mats):
-        #         name = f'keyframe_{i:05d}'
-        #         keyframes[name] = M
-        # else:
-        # read keyframes.yml in the last directory (user said the YAML is inside that subfolder)
-        kf_yaml = os.path.join(last_dir, 'keyframes.yml')
-        if not os.path.exists(kf_yaml):
-            # try parent-level keyframes.yml as fallback
-            kf_yaml = os.path.join(scene_root, 'keyframes.yml')
-            if not os.path.exists(kf_yaml):
-                # nothing to do for this part
-                continue
-        keyframes = read_keyframe_yaml(kf_yaml)
+        # Load keyframes from YAMLs to map names to indices
+        # YAML in the directory where poses_after_nerf.txt comes from (if any)
+        kf_yaml_for_poses = os.path.join(used_poses_dir, 'keyframes.yml') if used_poses_dir else None
+        keyframes_for_poses = {}
+        if kf_yaml_for_poses and os.path.exists(kf_yaml_for_poses):
+            keyframes_for_poses = read_keyframe_yaml(kf_yaml_for_poses)
 
-        # iterate in sorted order of keyframe names, infer fid from key name (e.g., keyframe_00012 -> 00012)
-        for k in sorted(keyframes.keys()):
-            pose = keyframes[k]
+        # Latest YAML (may include tail frames not covered by poses_after_nerf.txt)
+        kf_yaml_latest = os.path.join(last_dir, 'keyframes.yml')
+        if not os.path.exists(kf_yaml_latest):
+            # try parent-level keyframes.yml as fallback
+            kf_yaml_latest = os.path.join(scene_root, 'keyframes.yml')
+        keyframes_latest = read_keyframe_yaml(kf_yaml_latest) if os.path.exists(kf_yaml_latest) else {}
+
+        # Build merged campose: prefer NeRF-optimized for the available prefix; fill tail from latest YAML
+        campose = {}
+        if used_poses_dir and os.path.exists(poses_txt):
+            mats = read_poses_txt(poses_txt)
+            # Decide the name list to align with mats
+            if keyframes_for_poses:
+                names_for_mats = sorted(keyframes_for_poses.keys())
+            else:
+                names_for_mats = sorted(keyframes_latest.keys())
+            n = min(len(names_for_mats), len(mats))
+            # Fill prefix from NeRF poses
+            for i in range(n):
+                campose[names_for_mats[i]] = mats[i]
+        # Fill remaining (or all if no poses file) from latest YAML
+        for k in sorted(keyframes_latest.keys()):
+            if k not in campose:
+                campose[k] = keyframes_latest[k]
+
+        # Write merged campose.yml under part directory
+        campose_yaml_path = os.path.join(scene_root, 'campose.yml')
+        try:
+            with open(campose_yaml_path, 'w') as f:
+                # Serialize as { keyframe_xxxxx: { cam_in_ob: [16 floats] } }
+                out_yaml = {}
+                for k in sorted(campose.keys()):
+                    out_yaml[k] = { 'cam_in_ob': campose[k].reshape(-1).astype(float).tolist() }
+                yaml.safe_dump(out_yaml, f)
+        except Exception as e:
+            print(f"[warning] Failed to write campose.yml: {e}")
+
+        # Generate transforms from merged campose
+        for k in sorted(campose.keys()):
+            pose = campose[k]
             fid = ''.join([c for c in k if c.isdigit()]) or k
 
             T = pose.tolist()
