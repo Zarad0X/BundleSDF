@@ -45,13 +45,13 @@ def run_one_video(video_dir='/home/bowen/debug/2022-11-18-15-10-24_milk', out_fo
   cfg_bundletrack['ransac']['max_rot_no_neighbor'] = 10
   cfg_bundletrack['p2p']['max_dist'] = 0.02
   cfg_bundletrack['p2p']['max_normal_angle'] = 45
-  # Force every frame to be a keyframe and use all frames in BA
+  # Keyframe/BA/fail behavior from CLI args
   cfg_bundletrack.setdefault('keyframe', {})
-  cfg_bundletrack['keyframe']['force_all'] = 1
+  cfg_bundletrack['keyframe']['force_all'] = int(args.keyframe_force_all)
   cfg_bundletrack.setdefault('bundle', {})
-  cfg_bundletrack['bundle']['use_all_frames'] = 1
+  cfg_bundletrack['bundle']['use_all_frames'] = int(args.bundle_use_all_frames)
   cfg_bundletrack.setdefault('fail_policy', {})
-  cfg_bundletrack['fail_policy']['force_no_fail'] = 1
+  cfg_bundletrack['fail_policy']['force_no_fail'] = int(args.force_no_fail)
   cfg_track_dir = f'{out_folder}/config_bundletrack.yml'
   yaml.dump(cfg_bundletrack, open(cfg_track_dir,'w'))
 
@@ -228,6 +228,10 @@ if __name__=="__main__":
   parser.add_argument('--stride', type=int, default=1, help='interval of frames to run; 1 means using every frame')
   parser.add_argument('--debug_level', type=int, default=2, help='higher means more logging')
   parser.add_argument('--mask', type=str, default='0', help='0/1')
+  # Behavior toggles for keyframe selection / BA / fail policy
+  parser.add_argument('--keyframe_force_all', type=int, default=0, choices=[0,1], help='Force every frame to be a keyframe (1 to enable)')
+  parser.add_argument('--bundle_use_all_frames', type=int, default=1, choices=[0,1], help='Use all keyframes for BA (1) or select subset (0)')
+  parser.add_argument('--force_no_fail', type=int, default=0, choices=[0,1], help='Force no FAIL logic in tracking (1 to enable)')
   args = parser.parse_args()
 
   # If out_folder not specified, set it to <video_dir>/bundlesdf
