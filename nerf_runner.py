@@ -715,8 +715,8 @@ class NerfRunner:
       inds = torch.argmax(mask.float(), axis=1)
       inds = inds[..., None]
       z_min = torch.gather(z_vals,dim=1,index=inds)
-      weights = ray_weights * (depth<=self.cfg['far']*self.cfg['sc_factor']) * (mask.any(dim=-1))
-      depth_loss = ((z_min*weights-depth.view(-1,1)*weights)**2).mean() * self.cfg['depth_weight']
+      weights = ray_weights * (target_d<=self.cfg['far']*self.cfg['sc_factor']) * (mask.any(dim=-1))
+      depth_loss = (((z_min - target_d.view(-1,1))**2) * weights.view(-1,1)).mean() * self.cfg['depth_weight']
       loss = loss+depth_loss
 
     truncation = self.get_truncation()

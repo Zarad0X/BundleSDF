@@ -44,7 +44,7 @@ bundle:
   icp_pose_rot_thres: 60    # Rotation larger than XX deg is ignored for icp
   w_rpi: 0
   w_p2p: 1    # Used in loss.cpp
-  w_fm: 1
+  w_fm: 0
   w_sdf: 0
   w_pm: 0
   robust_delta: 0.005

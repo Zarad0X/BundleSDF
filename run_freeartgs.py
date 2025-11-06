@@ -34,7 +34,6 @@ def run_one_video(video_dir='/home/bowen/debug/2022-11-18-15-10-24_milk', out_fo
   cfg_bundletrack['feature_corres']['max_normal_no_neighbor'] = 20
   cfg_bundletrack['feature_corres']['map_points'] = True
   cfg_bundletrack['feature_corres']['resize'] = 400
-  cfg_bundletrack['feature_corres']['rematch_after_nerf'] = True
   cfg_bundletrack['feature_corres']['enable_fullmask_fallback'] = 1
   cfg_bundletrack['feature_corres']['fallback_min_match_with_ref'] = 10
   cfg_bundletrack['ransac']['inlier_dist'] = 0.01
@@ -43,7 +42,7 @@ def run_one_video(video_dir='/home/bowen/debug/2022-11-18-15-10-24_milk', out_fo
   cfg_bundletrack['ransac']['max_rot_deg_neighbor'] = 30
   cfg_bundletrack['ransac']['max_trans_no_neighbor'] = 0.01
   cfg_bundletrack['ransac']['max_rot_no_neighbor'] = 10
-  cfg_bundletrack['p2p']['max_dist'] = 0.02
+  cfg_bundletrack['p2p']['max_dist'] = float(args.icp_max_corres_dist)
   cfg_bundletrack['p2p']['max_normal_angle'] = 45
   # Keyframe/BA/fail behavior from CLI args
   cfg_bundletrack.setdefault('keyframe', {})
@@ -52,10 +51,18 @@ def run_one_video(video_dir='/home/bowen/debug/2022-11-18-15-10-24_milk', out_fo
   cfg_bundletrack['bundle']['use_all_frames'] = int(args.bundle_use_all_frames)
   cfg_bundletrack.setdefault('fail_policy', {})
   cfg_bundletrack['fail_policy']['force_no_fail'] = int(args.force_no_fail)
+  # Coarse estimation method configuration
+  cfg_bundletrack.setdefault('coarse', {})
+  cfg_bundletrack['coarse']['method'] = 'icp' if int(args.coarse_icp)==1 else 'feature'
+  cfg_bundletrack['coarse']['icp_max_corres_dist'] = float(args.icp_max_corres_dist)
+  cfg_bundletrack['coarse']['icp_voxel_size'] = float(args.icp_voxel_size)
+  # Always set ICP rotation rejection threshold from CLI (deg)
+  cfg_bundletrack['bundle']['icp_pose_rot_thres'] = float(args.icp_pose_rot_deg)
   cfg_track_dir = f'{out_folder}/config_bundletrack.yml'
   yaml.dump(cfg_bundletrack, open(cfg_track_dir,'w'))
 
   cfg_nerf = yaml.load(open(f"{code_dir}/config.yml",'r'))
+  cfg_nerf['n_step'] = 1
   cfg_nerf['continual'] = True
   cfg_nerf['trunc_start'] = 0.01
   cfg_nerf['trunc'] = 0.01
@@ -232,6 +239,12 @@ if __name__=="__main__":
   parser.add_argument('--keyframe_force_all', type=int, default=0, choices=[0,1], help='Force every frame to be a keyframe (1 to enable)')
   parser.add_argument('--bundle_use_all_frames', type=int, default=0, choices=[0,1], help='Use all keyframes for BA (1) or select subset (0)')
   parser.add_argument('--force_no_fail', type=int, default=0, choices=[0,1], help='Force no FAIL logic in tracking (1 to enable)')
+  # Coarse initialization method: feature (LoFTR+RANSAC) vs. ICP on point clouds
+  parser.add_argument('--coarse_icp', type=int, default=1, choices=[0,1], help='Use point-cloud ICP for coarse pose instead of features (1 enable)')
+  parser.add_argument('--icp_max_corres_dist', type=float, default=0.05, help='ICP max correspondence distance (in meters)')
+  parser.add_argument('--icp_voxel_size', type=float, default=0.02, help='Voxel size for ICP downsampling (in meters)')
+  parser.add_argument('--disable_feature_matching', type=int, default=0, choices=[0,1], help='Disable LoFTR/SIFT feature matching and RANSAC entirely (1 to disable)')
+  parser.add_argument('--icp_pose_rot_deg', type=float, default=15.0, help='Reject coarse ICP if rotation exceeds this (degrees)')
   args = parser.parse_args()
 
   # If out_folder not specified, set it to <video_dir>/bundlesdf
