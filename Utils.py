@@ -218,6 +218,9 @@ def toOpen3dCloud(points,colors=None,normals=None):
 
 
 def depth2xyzmap(depth, K):
+  # Robustly handle depth of shape (H,W) or (H,W,1)
+  if depth.ndim == 3 and depth.shape[2] == 1:
+    depth = depth[..., 0]
   invalid_mask = (depth<0.1)
   H,W = depth.shape[:2]
   vs,us = np.meshgrid(np.arange(0,H),np.arange(0,W), sparse=False, indexing='ij')
@@ -228,6 +231,9 @@ def depth2xyzmap(depth, K):
   ys = (vs-K[1,2])*zs/K[1,1]
   pts = np.stack((xs.reshape(-1),ys.reshape(-1),zs.reshape(-1)), 1)  #(N,3)
   xyz_map = pts.reshape(H,W,3).astype(np.float32)
+  # Ensure mask shape matches xyz_map leading dims (H,W)
+  if invalid_mask.ndim == 3 and invalid_mask.shape[2] == 1:
+    invalid_mask = invalid_mask[..., 0]
   xyz_map[invalid_mask] = 0
   return xyz_map.astype(np.float32)
 

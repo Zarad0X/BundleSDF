@@ -513,7 +513,69 @@ class BundleSdf:
     return frame
 
 
+  def _frame_to_world_pcd(self, frame, voxel_size=0.01):
+    rgb = np.array(frame._color)
+    depth = np.array(frame._depth)
+    mask = np.array(frame._fg_mask) if frame._fg_mask is not None else np.ones_like(depth)
+    H,W = depth.shape[:2]
+    valid = (depth > 0.1)
+    if mask.shape[:2] != depth.shape[:2]:
+      mask = cv2.resize(mask, (W, H), interpolation=cv2.INTER_NEAREST)
+    valid = valid & (mask > 0)
+    if valid.sum() < 100:
+      return None
+    xyz_map = depth2xyzmap(depth, self.K)
+    pts = xyz_map.reshape(-1,3)[valid.reshape(-1)]
+    cols = rgb.reshape(-1,3)[valid.reshape(-1)]
+    pcd = toOpen3dCloud(pts, colors=cols)
+    if voxel_size and voxel_size > 0:
+      pcd = pcd.voxel_down_sample(voxel_size)
+    try:
+      pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=max(voxel_size*2.5, 0.02), max_nn=30))
+    except Exception:
+      pass
+    # transform to world/model coordinates using current pose estimate
+    pcd.transform(np.array(frame._pose_in_model))
+    return pcd
+
+
+  def _icp_coarse_residual(self, frame, ref_frame):
+    # Read config
+    coarse_cfg = self.cfg_track.get('coarse', {})
+    voxel = float(coarse_cfg.get('icp_voxel_size', 0.01))
+    max_corr = float(coarse_cfg.get('icp_max_corres_dist', 0.02))
+    rot_thres_deg = float(self.cfg_track.get('bundle', {}).get('icp_pose_rot_thres', 60))
+    rot_thres_rad = rot_thres_deg/180.0*np.pi
+
+    src = self._frame_to_world_pcd(frame, voxel_size=voxel)
+    dst = self._frame_to_world_pcd(ref_frame, voxel_size=voxel)
+    if src is None or dst is None:
+      logging.warning("ICP coarse: invalid pcd (too few points)")
+      return np.eye(4)
+
+    try:
+      result = o3d.pipelines.registration.registration_icp(
+        src, dst, max_corr, np.eye(4),
+        o3d.pipelines.registration.TransformationEstimationPointToPlane())
+      T = np.array(result.transformation)
+    except Exception as e:
+      logging.warning(f"ICP coarse failed: {e}")
+      return np.eye(4)
+
+    # Sanity check on rotation magnitude
+    R = T[:3,:3]
+    ang = np.arccos(np.clip((np.trace(R)-1)/2.0, -1.0, 1.0))
+    if ang >= rot_thres_rad:
+      logging.warning(f"ICP coarse rejected for large rotation: {ang} rad >= {rot_thres_rad} rad")
+      return np.eye(4)
+    return T
+
+
   def find_corres(self, frame_pairs):
+    # Optionally disable feature matching entirely
+    if int(self.cfg_track.get("feature_corres", {}).get("enabled", 1)) == 0:
+      logging.info("feature_corres.enabled=0; skip feature matching/RANSAC")
+      return
     logging.info(f"frame_pairs: {len(frame_pairs)}")
     is_match_ref = len(frame_pairs)==1 and frame_pairs[0][0]._ref_frame_id==frame_pairs[0][1]._id and self.bundler._newframe==frame_pairs[0][0]
     force_no_fail = bool(self.cfg_track.get('fail_policy', {}).get('force_no_fail', 0))
@@ -674,62 +736,65 @@ class BundleSdf:
       self.bundler._frames[frame._id] = frame
       return
 
-    min_match_with_ref = self.cfg_track["feature_corres"]["min_match_with_ref"]
+    coarse_method = self.cfg_track.get('coarse', {}).get('method', 'feature')
+    feat_enabled = int(self.cfg_track.get("feature_corres", {}).get("enabled", 1)) == 1
+    if coarse_method == 'icp':
+      logging.info("Coarse method: ICP on point clouds")
+      logging.info(f"frame {frame._id_str} pose update before\n{frame._pose_in_model.round(3)}")
+      offset = self._icp_coarse_residual(frame, ref_frame)
+      frame._pose_in_model = offset @ frame._pose_in_model
+      logging.info(f"frame {frame._id_str} pose update after\n{frame._pose_in_model.round(3)}")
+    else:
+      min_match_with_ref = self.cfg_track["feature_corres"]["min_match_with_ref"]
 
-    self.find_corres([(frame, ref_frame)])
-    matches = self.bundler._fm._matches[(frame, ref_frame)]
+      self.find_corres([(frame, ref_frame)])
+      matches = self.bundler._fm._matches[(frame, ref_frame)]
 
-    if frame._status==my_cpp.Frame.FAIL:
-      if not force_no_fail:
-        logging.info(f"find corres fail, mark {frame._id_str} as FAIL")
-        self.bundler.forgetFrame(frame)
-        return
-      else:
-        logging.warning(f"force_no_fail enabled: reset FAIL status for {frame._id_str}")
-        frame._status = my_cpp.Frame.OTHER
-
-    matches = self.bundler._fm._matches[(frame, ref_frame)]
-    if len(matches)<min_match_with_ref:
-      visibles = []
-      for kf in self.bundler._keyframes:
-        visible = my_cpp.computeCovisibility(frame, kf)
-        visibles.append(visible)
-      visibles = np.array(visibles)
-      ids = np.argsort(visibles)[::-1]
-      found = False
-      # pdb.set_trace()
-      for id in ids:
-        kf = self.bundler._keyframes[id]
-        logging.info(f"trying new ref frame {kf._id_str}")
-        ref_frame = kf
-        frame._ref_frame_id = kf._id
-        frame._pose_in_model = kf._pose_in_model
-        self.find_corres([(frame, ref_frame)])
-
-        # self.bundler._fm.findCorres(frame, ref_frame)
-
-        if len(self.bundler._fm._matches[(frame,kf)])>=min_match_with_ref:
-          logging.info(f"re-choose new ref frame to {kf._id_str}")
-          found = True
-          break
-
-      if not found:
+      if frame._status==my_cpp.Frame.FAIL:
         if not force_no_fail:
-          frame._status = my_cpp.Frame.FAIL
-          logging.info(f"frame {frame._id_str} has not suitable ref_frame, mark as FAIL")
+          logging.info(f"find corres fail, mark {frame._id_str} as FAIL")
           self.bundler.forgetFrame(frame)
           return
         else:
-          logging.warning(f"force_no_fail enabled: proceed without suitable ref_frame for {frame._id_str}")
+          logging.warning(f"force_no_fail enabled: reset FAIL status for {frame._id_str}")
+          frame._status = my_cpp.Frame.OTHER
 
-    logging.info(f"frame {frame._id_str} pose update before\n{frame._pose_in_model.round(3)}")
-    # If insufficient matches and force_no_fail, skip pose update (use identity)
-    if force_no_fail and len(matches) < min_match_with_ref:
-      offset = np.eye(4)
-    else:
-      offset = self.bundler._fm.procrustesByCorrespondence(frame, ref_frame)
-    frame._pose_in_model = offset@frame._pose_in_model
-    logging.info(f"frame {frame._id_str} pose update after\n{frame._pose_in_model.round(3)}")
+      matches = self.bundler._fm._matches[(frame, ref_frame)]
+      if len(matches)<min_match_with_ref:
+        visibles = []
+        for kf in self.bundler._keyframes:
+          visible = my_cpp.computeCovisibility(frame, kf)
+          visibles.append(visible)
+        visibles = np.array(visibles)
+        ids = np.argsort(visibles)[::-1]
+        found = False
+        for id in ids:
+          kf = self.bundler._keyframes[id]
+          logging.info(f"trying new ref frame {kf._id_str}")
+          ref_frame = kf
+          frame._ref_frame_id = kf._id
+          frame._pose_in_model = kf._pose_in_model
+          self.find_corres([(frame, ref_frame)])
+          if len(self.bundler._fm._matches[(frame,kf)])>=min_match_with_ref:
+            logging.info(f"re-choose new ref frame to {kf._id_str}")
+            found = True
+            break
+        if not found:
+          if not force_no_fail:
+            frame._status = my_cpp.Frame.FAIL
+            logging.info(f"frame {frame._id_str} has not suitable ref_frame, mark as FAIL")
+            self.bundler.forgetFrame(frame)
+            return
+          else:
+            logging.warning(f"force_no_fail enabled: proceed without suitable ref_frame for {frame._id_str}")
+
+      logging.info(f"frame {frame._id_str} pose update before\n{frame._pose_in_model.round(3)}")
+      if force_no_fail and len(matches) < min_match_with_ref:
+        offset = np.eye(4)
+      else:
+        offset = self.bundler._fm.procrustesByCorrespondence(frame, ref_frame)
+      frame._pose_in_model = offset@frame._pose_in_model
+      logging.info(f"frame {frame._id_str} pose update after\n{frame._pose_in_model.round(3)}")
 
     window_size = self.cfg_track["bundle"]["window_size"]
     if len(self.bundler._frames)-len(self.bundler._keyframes)>window_size:
@@ -746,8 +811,9 @@ class BundleSdf:
 
     local_frames = self.bundler._local_frames
 
-    pairs = self.bundler.getFeatureMatchPairs(self.bundler._local_frames)
-    self.find_corres(pairs)
+    if feat_enabled:
+      pairs = self.bundler.getFeatureMatchPairs(self.bundler._local_frames)
+      self.find_corres(pairs)
     if frame._status==my_cpp.Frame.FAIL:
       if not force_no_fail:
         self.bundler.forgetFrame(frame)
