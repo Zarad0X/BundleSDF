@@ -17,7 +17,8 @@ import my_cpp
 from gui import *
 from BundleTrack.scripts.data_reader import *
 from Utils import *
-from loftr_wrapper import LoftrRunner
+
+from loftr_wrapper import AlltrackerRunner
 import multiprocessing,threading
 import torch
 from typing import Dict
@@ -478,7 +479,7 @@ class BundleSdf:
 
     yml = my_cpp.YamlLoadFile(cfg_track_dir)
     self.bundler = my_cpp.Bundler(yml)
-    self.loftr = LoftrRunner()
+    self.loftr = AlltrackerRunner()
     self.cnt = -1
     self.K = None
     self.mesh = None
@@ -580,111 +581,85 @@ class BundleSdf:
     is_match_ref = len(frame_pairs)==1 and frame_pairs[0][0]._ref_frame_id==frame_pairs[0][1]._id and self.bundler._newframe==frame_pairs[0][0]
     force_no_fail = bool(self.cfg_track.get('fail_policy', {}).get('force_no_fail', 0))
 
-    imgs, tfs, query_pairs = self.bundler._fm.getProcessedImagePairs(frame_pairs)
-    imgs = np.array([np.array(img) for img in imgs])
+    logging.info("Using Alltracker with video sequence, skipping ROI cropping")
+    for (frameA, frameB) in frame_pairs:
+      start_f, end_f = frameA, frameB
+      
+      seq = []
+      # for fid in range(start_f._id, end_f._id):
+      #   if fid in self.bundler._frames:
+      #     seq.append(self.bundler._frames[fid]
+      seq = [start_f, end_f]
 
-    if len(query_pairs)==0:
+      # Use full images directly
+      imgs = [np.array(f._color) for f in seq]
+      matches = self.loftr.predict_sequence(imgs)
+      # matches: [x0, y0, x1, y1] (already in original image coordinates)
+
+      # Filter points by mask
+      maskA = np.array(frameA._fg_mask)
+      if maskA.ndim > 2: maskA = maskA[..., 0]
+      maskB = np.array(frameB._fg_mask)
+      if maskB.ndim > 2: maskB = maskB[..., 0]
+
+      ptsA_int = matches[:, 0:2].round().astype(int)
+      ptsB_int = matches[:, 2:4].round().astype(int)
+      
+      hA, wA = maskA.shape
+      hB, wB = maskB.shape
+      
+      # 1. Bounds check
+      valid_bounds = (ptsA_int[:, 0] >= 0) & (ptsA_int[:, 0] < wA) & (ptsA_int[:, 1] >= 0) & (ptsA_int[:, 1] < hA) & \
+                      (ptsB_int[:, 0] >= 0) & (ptsB_int[:, 0] < wB) & (ptsB_int[:, 1] >= 0) & (ptsB_int[:, 1] < hB)
+      
+      matches_in_bounds = matches[valid_bounds]
+      
+      t_ptsA_b = matches_in_bounds[:, 0:2]
+      t_ptsB_b = matches_in_bounds[:, 2:4]
+        
+      ptsA_int_b = t_ptsA_b.round().astype(int)
+      ptsB_int_b = t_ptsB_b.round().astype(int)
+      
+      # 2. Mask check
+      valid_mask = (maskA[ptsA_int_b[:, 1], ptsA_int_b[:, 0]] > 0) & (maskB[ptsB_int_b[:, 1], ptsB_int_b[:, 0]] > 0)
+      matches_masked = matches_in_bounds[valid_mask]
+      
+      min_match_with_ref = self.cfg_track.get("feature_corres", {}).get("min_match_with_ref", 50)
+      
+      if len(matches_masked) >= min_match_with_ref:
+          matches = matches_masked
+      else:
+          logging.warning(f"Insufficient matches with part mask ({len(matches_masked)} < {min_match_with_ref}), using global matches ({len(matches_in_bounds)}).")
+          # Build dataset full masks from datasets/<object>/masks/<id>.png
+          def _load_dataset_mask(id_str, h, w):
+            # Strict: run_custom.py writes cfg_bundletrack['data_dir']=video_dir, so bundler.yml must carry it
+            ds_dir = self.bundler.yml["data_dir"].Scalar()
+            mask_dir = os.path.join(ds_dir, "masks")
+            p = os.path.join(mask_dir, f"{id_str}.png")
+            if not os.path.isfile(p):
+                raise FileNotFoundError(f"Dataset mask PNG not found for frame {id_str} under {mask_dir}")
+            m = cv2.imread(p, -1)
+            if m is None:
+                raise RuntimeError(f"Failed to read mask PNG: {p}")
+            if m.ndim == 3:
+                m = m[..., 0]
+            m = (m > 0).astype(np.uint8) * 255
+            return m
+          maskA = _load_dataset_mask(frameA._id_str, hA, wA)
+          maskB = _load_dataset_mask(frameB._id_str, hB, wB)
+          valid_mask = (maskA[ptsA_int_b[:, 1], ptsA_int_b[:, 0]] > 0) & (maskB[ptsB_int_b[:, 1], ptsB_int_b[:, 0]] > 0)
+          matches_masked = matches_in_bounds[valid_mask]
+          matches = matches_masked
+      self.bundler._fm._raw_matches[(frameA, frameB)] = matches.round().astype(np.uint16)
+          
+      # Skip the rest of LoFTR logic
+      self.bundler._fm.rawMatchesToCorres(frame_pairs)
+      for pair in frame_pairs:
+        self.bundler._fm.vizCorresBetween(pair[0], pair[1], 'before_ransac')
+      self.bundler._fm.runRansacMultiPairGPU(frame_pairs)
+      for pair in frame_pairs:
+        self.bundler._fm.vizCorresBetween(pair[0], pair[1], 'after_ransac')
       return
-
-    corres = self.loftr.predict(rgbAs=imgs[::2], rgbBs=imgs[1::2])
-    for i_pair in range(len(query_pairs)):
-      cur_corres = corres[i_pair][:,:4]
-      tfA = np.array(tfs[i_pair*2])
-      tfB = np.array(tfs[i_pair*2+1])
-      cur_corres[:,:2] = transform_pts(cur_corres[:,:2], np.linalg.inv(tfA))
-      cur_corres[:,2:4] = transform_pts(cur_corres[:,2:4], np.linalg.inv(tfB))
-      self.bundler._fm._raw_matches[query_pairs[i_pair]] = cur_corres.round().astype(np.uint16)
-
-    min_match_with_ref = self.cfg_track["feature_corres"]["min_match_with_ref"]
-    enable_fallback = bool(self.cfg_track["feature_corres"].get("enable_fullmask_fallback", 1))
-    fallback_min = int(self.cfg_track["feature_corres"].get("fallback_min_match_with_ref", min_match_with_ref))
-
-    # Fallback: if first ref matching is insufficient, retry LoFTR using full masks (ignore part mask)
-    if is_match_ref and len(self.bundler._fm._raw_matches[frame_pairs[0]]) < min_match_with_ref and enable_fallback:
-      logging.warning("Low matches with part mask, retry LoFTR with dataset full mask for the ref pair")
-      A, B = frame_pairs[0]
-      # Backup masks (strict)
-      maskA_orig = np.array(A._fg_mask).copy()
-      maskB_orig = np.array(B._fg_mask).copy()
-      # Build dataset full masks from datasets/<object>/masks/<id>.png
-      def _load_dataset_mask(id_str, h, w):
-        # Strict: run_custom.py writes cfg_bundletrack['data_dir']=video_dir, so bundler.yml must carry it
-        ds_dir = self.bundler.yml["data_dir"].Scalar()
-        mask_dir = os.path.join(ds_dir, "masks")
-        p = os.path.join(mask_dir, f"{id_str}.png")
-        if not os.path.isfile(p):
-            raise FileNotFoundError(f"Dataset mask PNG not found for frame {id_str} under {mask_dir}")
-        m = cv2.imread(p, -1)
-        if m is None:
-            raise RuntimeError(f"Failed to read mask PNG: {p}")
-        if m.ndim == 3:
-            m = m[..., 0]
-        m = (m > 0).astype(np.uint8) * 255
-        return m
-
-      hA, wA = np.array(A._color).shape[:2]
-      mA = _load_dataset_mask(A._id_str, hA, wA)
-      A._fg_mask = my_cpp.cvMat(mA)
-      hB, wB = np.array(B._color).shape[:2]
-      mB = _load_dataset_mask(B._id_str, hB, wB)
-      B._fg_mask = my_cpp.cvMat(mB)
-
-      # Rebuild processed images for this pair and rerun LoFTR
-      imgs_fb, tfs_fb, qp_fb = self.bundler._fm.getProcessedImagePairs([frame_pairs[0]])
-      imgs_fb = np.array([np.array(img) for img in imgs_fb])
-      # If the pair was filtered out due to existing raw_matches, try forcing reprocessing
-      if len(qp_fb) == 0:
-        logging.warning("Fallback preprocessing produced zero pairs (likely due to existing raw_matches); retrying after clearing the pair")
-        prev_raw_pair = self.bundler._fm._raw_matches[frame_pairs[0]] if frame_pairs[0] in self.bundler._fm._raw_matches else None
-        if frame_pairs[0] in self.bundler._fm._raw_matches:
-          del self.bundler._fm._raw_matches[frame_pairs[0]]
-        imgs_fb, tfs_fb, qp_fb = self.bundler._fm.getProcessedImagePairs([frame_pairs[0]])
-        imgs_fb = np.array([np.array(img) for img in imgs_fb])
-        # If still no pairs, skip the fallback gracefully
-        if len(qp_fb) == 0:
-          logging.error("Fallback preprocessing still produced zero pairs; aborting.")
-          if prev_raw_pair is not None:
-            self.bundler._fm._raw_matches[frame_pairs[0]] = prev_raw_pair
-          # Restore original masks before raising
-          A._fg_mask = my_cpp.cvMat(maskA_orig)
-          B._fg_mask = my_cpp.cvMat(maskB_orig)
-          raise RuntimeError("Fallback preprocessing returned unexpected number of pairs")
-        else:
-          # Proceed using the recomputed single pair
-          prev_raw_pair = None  # We will overwrite with new matches
-      # At this point, if we have at least one pair, run LoFTR and update matches
-      if len(qp_fb) >= 1:
-        corres_fb = self.loftr.predict(rgbAs=imgs_fb[::2], rgbBs=imgs_fb[1::2])
-        cur = corres_fb[0][:,:4]
-        tfA = np.array(tfs_fb[0])
-        tfB = np.array(tfs_fb[1])
-        cur[:,:2] = transform_pts(cur[:,:2], np.linalg.inv(tfA))
-        cur[:,2:4] = transform_pts(cur[:,2:4], np.linalg.inv(tfB))
-        self.bundler._fm._raw_matches[frame_pairs[0]] = cur.round().astype(np.uint16)
-        logging.info(f"fallback raw matches: {len(cur)}")
-        # Restore original masks
-        A._fg_mask = my_cpp.cvMat(maskA_orig)
-        B._fg_mask = my_cpp.cvMat(maskB_orig)
-
-      if len(self.bundler._fm._raw_matches[frame_pairs[0]]) < fallback_min:
-        # Still insufficient; respect fail policy
-        self.bundler._fm._raw_matches[frame_pairs[0]] = []
-        if not force_no_fail:
-          self.bundler._newframe._status = my_cpp.Frame.FAIL
-          logging.info(f'frame {self.bundler._newframe._id_str} mark FAIL after fallback, due to no matching')
-          return
-        else:
-          logging.warning(f"force_no_fail enabled: continue without sufficient matches after fallback for {self.bundler._newframe._id_str}")
-
-    self.bundler._fm.rawMatchesToCorres(query_pairs)
-
-    for pair in query_pairs:
-      self.bundler._fm.vizCorresBetween(pair[0], pair[1], 'before_ransac')
-
-    self.bundler._fm.runRansacMultiPairGPU(query_pairs)
-
-    for pair in query_pairs:
-      self.bundler._fm.vizCorresBetween(pair[0], pair[1], 'after_ransac')
 
 
 
