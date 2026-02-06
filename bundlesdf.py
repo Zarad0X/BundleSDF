@@ -587,12 +587,17 @@ class BundleSdf:
     logging.info("Using Alltracker with video sequence, skipping ROI cropping")
     for (frameA, frameB) in frame_pairs:
       start_f, end_f = frameA, frameB
-      seq = []
-      # for fid in range(start_f._id, end_f._id):
-      #   if fid in self.bundler._frames:
-      #     seq.append(self.bundler._frames[fid]
-      seq = [start_f, end_f]
-
+      if start_f._id == end_f._id:
+        continue
+      seq = [start_f]
+      for fid in range(start_f._id, end_f._id, 1 if end_f._id>start_f._id else -1):
+        if fid == start_f._id or fid == end_f._id:
+          continue
+        if fid in self.bundler._frames:
+          seq.append(self.bundler._frames[fid])
+      #seq = [start_f, end_f]
+      seq.append(end_f)
+      
       # Use full images directly
       imgs = [np.array(f._color) for f in seq]
       matches = self.loftr.predict_sequence(imgs)

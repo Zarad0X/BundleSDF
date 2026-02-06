@@ -49,7 +49,7 @@ class AlltrackerRunner:
     H, W, _ = rgb_list[0].shape
     
     # Prepare tensor
-    imgs_torch = [torch.from_numpy(img).permute(2,0,1).float()/255.0 for img in rgb_list]
+    imgs_torch = [torch.from_numpy(img).permute(2,0,1).float() for img in rgb_list]
     rgbs = torch.stack(imgs_torch, dim=0).unsqueeze(0).cuda() # (1, T, 3, H, W)
     
     images_dict = {"rgbs_tensor": rgbs}
@@ -97,8 +97,8 @@ class AlltrackerRunner:
       img1 = rgbBs[i]
 
       # (H,W,C) -> (C,H,W) -> (1,2,C,H,W)
-      t0 = torch.from_numpy(img0).permute(2,0,1).float() / 255.0
-      t1 = torch.from_numpy(img1).permute(2,0,1).float() / 255.0
+      t0 = torch.from_numpy(img0).permute(2,0,1).float()
+      t1 = torch.from_numpy(img1).permute(2,0,1).float()
       rgbs = torch.stack([t0, t1], dim=0).unsqueeze(0).cuda()
 
       images_dict = {"rgbs_tensor": rgbs}
