@@ -58,28 +58,31 @@ class AlltrackerRunner:
     
     # We want matches from frame 0 to frame T-1
     # traj_maps[0, T-1] contains coordinates in frame T-1 for each pixel in frame 0
-    if traj_maps.dim() == 5:
-      coords_end = traj_maps[0, -1].permute(1, 2, 0).cpu().numpy() # (H,W,2)
-    else:
-      coords_end = traj_maps[0].permute(1, 2, 0).cpu().numpy() # (H,W,2) 
-    if visconf_maps.dim() == 4:
-       vis = visconf_maps[0, 0].cpu().numpy() # (B, 2, H, W) -> (H, W)
-       conf = visconf_maps[0, 1].cpu().numpy() # (B, 2, H, W) -> (H, W)
-    else:
-       vis = visconf_maps[0, -1, 0].cpu().numpy() # (H,W)
-       conf = visconf_maps[0, -1, 1].cpu().numpy() # (H,W)
-    
-    ys, xs = np.indices((H, W))
-    pts0 = np.stack([xs, ys], axis=-1).reshape(-1, 2)
-    pts1 = coords_end.reshape(-1, 2)
-    conf_flat = conf.reshape(-1, 1)
+    all_res = []
+    for t in range(traj_maps.size(1)-T_in+1, traj_maps.size(1)):
+      if traj_maps.dim() == 5:
+        coords_end = traj_maps[0, t].permute(1, 2, 0).cpu().numpy() # (H,W,2)
+      else:
+        coords_end = traj_maps[0].permute(1, 2, 0).cpu().numpy() # (H,W,2) 
+      if visconf_maps.dim() == 4:
+        vis = visconf_maps[0, 0].cpu().numpy() # (B, 2, H, W) -> (H, W)
+        conf = visconf_maps[0, 1].cpu().numpy() # (B, 2, H, W) -> (H, W)
+      else:
+        vis = visconf_maps[0, t, 0].cpu().numpy() # (H,W)
+        conf = visconf_maps[0, t, 1].cpu().numpy() # (H,W)
+      
+      ys, xs = np.indices((H, W))
+      pts0 = np.stack([xs, ys], axis=-1).reshape(-1, 2)
+      pts1 = coords_end.reshape(-1, 2)
+      conf_flat = conf.reshape(-1, 1)
 
-    mask = (conf_flat[:, 0] > 0.5) & (vis.reshape(-1) > 0.5)
-    pts0_sel = pts0[mask]
-    pts1_sel = pts1[mask]
-    conf_sel = conf_flat[mask]
-    res = np.concatenate([pts0_sel, pts1_sel], axis=1).astype(np.float32)
-    return res
+      mask = (conf_flat[:, 0] > 0.5) & (vis.reshape(-1) > 0.5)
+      pts0_sel = pts0[mask]
+      pts1_sel = pts1[mask]
+      conf_sel = conf_flat[mask]
+      res = np.concatenate([pts0_sel, pts1_sel], axis=1).astype(np.float32)
+      all_res.append(res)
+    return all_res
 
   @torch.no_grad()
   def predict(self, rgbAs: np.ndarray, rgbBs: np.ndarray):

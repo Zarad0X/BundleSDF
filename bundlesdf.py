@@ -575,6 +575,56 @@ class BundleSdf:
     return T
 
 
+  def _colored_icp_coarse_residual(self, frame, ref_frame):
+    """参考 icp/color_icp.py 实现的带 RGB 信息的 ICP 配准"""
+    coarse_cfg = self.cfg_track.get('coarse', {})
+    voxel = float(coarse_cfg.get('icp_voxel_size', 0.01))
+    max_corr = float(coarse_cfg.get('icp_max_corres_dist', 0.02))
+    rot_thres_deg = float(self.cfg_track.get('bundle', {}).get('icp_pose_rot_thres', 60))
+    rot_thres_rad = rot_thres_deg/180.0*np.pi
+
+    src = self._frame_to_world_pcd(frame, voxel_size=voxel)
+    dst = self._frame_to_world_pcd(ref_frame, voxel_size=voxel)
+    if src is None or dst is None:
+      logging.warning("Colored ICP coarse: invalid pcd (too few points)")
+      return np.eye(4)
+
+    try:
+      # 优先使用 Colored ICP
+      result = o3d.pipelines.registration.registration_colored_icp(
+          src, dst, max_corr, np.eye(4),
+          o3d.pipelines.registration.TransformationEstimationForColoredICP(),
+          criteria=o3d.pipelines.registration.ICPConvergenceCriteria(
+              relative_fitness=1e-6, relative_rmse=1e-6, max_iteration=50))
+      
+      # 如果 fitness 太低，回退到点到面 ICP
+      if result.fitness < 0.8:
+          logging.info(f"Colored ICP fitness low ({result.fitness:.3f}), falling back to point-to-plane")
+          result = o3d.pipelines.registration.registration_icp(
+              src, dst, max_corr, np.eye(4),
+              o3d.pipelines.registration.TransformationEstimationPointToPlane())
+          
+      T = np.array(result.transformation)
+    except Exception as e:
+      logging.warning(f"Colored ICP failed, falling back to simple ICP: {e}")
+      try:
+        result = o3d.pipelines.registration.registration_icp(
+          src, dst, max_corr, np.eye(4),
+          o3d.pipelines.registration.TransformationEstimationPointToPlane())
+        T = np.array(result.transformation)
+      except Exception as e2:
+        logging.warning(f"Fallback ICP also failed: {e2}")
+        return np.eye(4)
+
+    # Sanity check on rotation magnitude
+    R = T[:3,:3]
+    ang = np.arccos(np.clip((np.trace(R)-1)/2.0, -1.0, 1.0))
+    if ang >= rot_thres_rad:
+      logging.warning(f"Colored ICP rejected for large rotation: {ang} rad >= {rot_thres_rad} rad")
+      return np.eye(4)
+    return T
+
+
   def find_corres(self, frame_pairs):
     # Optionally disable feature matching entirely
     if int(self.cfg_track.get("feature_corres", {}).get("enabled", 1)) == 0:
@@ -589,6 +639,10 @@ class BundleSdf:
       start_f, end_f = frameA, frameB
       if start_f._id == end_f._id:
         continue
+      if (frameA, frameB) in self.bundler._fm._raw_matches and self.bundler._fm._raw_matches[(frameA, frameB)] is not None:
+        logging.info(f"Raw matches already exist for pair ({frameA._id_str}, {frameB._id_str}), skipping Alltracker")
+        continue
+
       seq = [start_f]
       for fid in range(start_f._id, end_f._id, 1 if end_f._id>start_f._id else -1):
         if fid == start_f._id or fid == end_f._id:
@@ -600,64 +654,68 @@ class BundleSdf:
       
       # Use full images directly
       imgs = [np.array(f._color) for f in seq]
-      matches = self.loftr.predict_sequence(imgs)
-      # matches: [x0, y0, x1, y1] (already in original image coordinates)
+      matches_list = self.loftr.predict_sequence(imgs)
+      # matches_list: list of [x0, y0, x1, y1] (already in original image coordinates)
+      
+      for i in range(1, len(seq)):
+        cur_frameA = seq[0]
+        cur_frameB = seq[i]
+        cur_matches = matches_list[i-1]
 
-      # Filter points by mask
-      maskA = np.array(frameA._fg_mask)
-      if maskA.ndim > 2: maskA = maskA[..., 0]
-      maskB = np.array(frameB._fg_mask)
-      if maskB.ndim > 2: maskB = maskB[..., 0]
+        # Filter points by mask
+        maskA = np.array(cur_frameA._fg_mask)
+        if maskA.ndim > 2: maskA = maskA[..., 0]
+        maskB = np.array(cur_frameB._fg_mask)
+        if maskB.ndim > 2: maskB = maskB[..., 0]
 
-      ptsA_int = matches[:, 0:2].round().astype(int)
-      ptsB_int = matches[:, 2:4].round().astype(int)
-      
-      hA, wA = maskA.shape
-      hB, wB = maskB.shape
-      
-      # 1. Bounds check
-      valid_bounds = (ptsA_int[:, 0] >= 0) & (ptsA_int[:, 0] < wA) & (ptsA_int[:, 1] >= 0) & (ptsA_int[:, 1] < hA) & \
-                      (ptsB_int[:, 0] >= 0) & (ptsB_int[:, 0] < wB) & (ptsB_int[:, 1] >= 0) & (ptsB_int[:, 1] < hB)
-      
-      matches_in_bounds = matches[valid_bounds]
-      
-      t_ptsA_b = matches_in_bounds[:, 0:2]
-      t_ptsB_b = matches_in_bounds[:, 2:4]
+        ptsA_int = cur_matches[:, 0:2].round().astype(int)
+        ptsB_int = cur_matches[:, 2:4].round().astype(int)
         
-      ptsA_int_b = t_ptsA_b.round().astype(int)
-      ptsB_int_b = t_ptsB_b.round().astype(int)
-      
-      # 2. Mask check
-      valid_mask = (maskA[ptsA_int_b[:, 1], ptsA_int_b[:, 0]] > 0) & (maskB[ptsB_int_b[:, 1], ptsB_int_b[:, 0]] > 0)
-      matches_masked = matches_in_bounds[valid_mask]
-      
-      min_match_with_ref = self.cfg_track.get("feature_corres", {}).get("min_match_with_ref", 50)
-      
-      if len(matches_masked) >= min_match_with_ref:
-          matches = matches_masked
-      else:
-          logging.warning(f"Insufficient matches with part mask ({len(matches_masked)} < {min_match_with_ref}), using global matches ({len(matches_in_bounds)}).")
-          # Build dataset full masks from datasets/<object>/masks/<id>.png
-          def _load_dataset_mask(id_str, h, w):
-            # Strict: run_custom.py writes cfg_bundletrack['data_dir']=video_dir, so bundler.yml must carry it
-            ds_dir = self.bundler.yml["data_dir"].Scalar()
-            mask_dir = os.path.join(ds_dir, "masks")
-            p = os.path.join(mask_dir, f"{id_str}.png")
-            if not os.path.isfile(p):
-                raise FileNotFoundError(f"Dataset mask PNG not found for frame {id_str} under {mask_dir}")
-            m = cv2.imread(p, -1)
-            if m is None:
-                raise RuntimeError(f"Failed to read mask PNG: {p}")
-            if m.ndim == 3:
-                m = m[..., 0]
-            m = (m > 0).astype(np.uint8) * 255
-            return m
-          maskA = _load_dataset_mask(frameA._id_str, hA, wA)
-          maskB = _load_dataset_mask(frameB._id_str, hB, wB)
-          valid_mask = (maskA[ptsA_int_b[:, 1], ptsA_int_b[:, 0]] > 0) & (maskB[ptsB_int_b[:, 1], ptsB_int_b[:, 0]] > 0)
-          matches_masked = matches_in_bounds[valid_mask]
-          matches = matches_masked
-      self.bundler._fm._raw_matches[(frameA, frameB)] = matches.round().astype(np.uint16)
+        hA, wA = maskA.shape
+        hB, wB = maskB.shape
+        
+        # 1. Bounds check
+        valid_bounds = (ptsA_int[:, 0] >= 0) & (ptsA_int[:, 0] < wA) & (ptsA_int[:, 1] >= 0) & (ptsA_int[:, 1] < hA) & \
+                        (ptsB_int[:, 0] >= 0) & (ptsB_int[:, 0] < wB) & (ptsB_int[:, 1] >= 0) & (ptsB_int[:, 1] < hB)
+        
+        matches_in_bounds = cur_matches[valid_bounds]
+        
+        t_ptsA_b = matches_in_bounds[:, 0:2]
+        t_ptsB_b = matches_in_bounds[:, 2:4]
+          
+        ptsA_int_b = t_ptsA_b.round().astype(int)
+        ptsB_int_b = t_ptsB_b.round().astype(int)
+        
+        # 2. Mask check
+        valid_mask = (maskA[ptsA_int_b[:, 1], ptsA_int_b[:, 0]] > 0) & (maskB[ptsB_int_b[:, 1], ptsB_int_b[:, 0]] > 0)
+        matches_masked = matches_in_bounds[valid_mask]
+        
+        min_match_with_ref = self.cfg_track.get("feature_corres", {}).get("min_match_with_ref", 50)
+        
+        if len(matches_masked) >= min_match_with_ref:
+            final_matches = matches_masked
+        else:
+            logging.warning(f"Insufficient matches with part mask ({len(matches_masked)} < {min_match_with_ref}) for ({cur_frameA._id_str}, {cur_frameB._id_str}), using global matches ({len(matches_in_bounds)}).")
+            # Build dataset full masks from datasets/<object>/masks/<id>.png
+            def _load_dataset_mask(id_str, h, w):
+              # Strict: run_custom.py writes cfg_bundletrack['data_dir']=video_dir, so bundler.yml must carry it
+              ds_dir = self.bundler.yml["data_dir"].Scalar()
+              mask_dir = os.path.join(ds_dir, "masks")
+              p = os.path.join(mask_dir, f"{id_str}.png")
+              if not os.path.isfile(p):
+                  raise FileNotFoundError(f"Dataset mask PNG not found for frame {id_str} under {mask_dir}")
+              m = cv2.imread(p, -1)
+              if m is None:
+                  raise RuntimeError(f"Failed to read mask PNG: {p}")
+              if m.ndim == 3:
+                  m = m[..., 0]
+              m = (m > 0).astype(np.uint8) * 255
+              return m
+            full_maskA = _load_dataset_mask(cur_frameA._id_str, hA, wA)
+            full_maskB = _load_dataset_mask(cur_frameB._id_str, hB, wB)
+            valid_full_mask = (full_maskA[ptsA_int_b[:, 1], ptsA_int_b[:, 0]] > 0) & (full_maskB[ptsB_int_b[:, 1], ptsB_int_b[:, 0]] > 0)
+            final_matches = matches_in_bounds[valid_full_mask]
+        self.bundler._fm._raw_matches[(cur_frameA, cur_frameB)] = final_matches.round().astype(np.uint16)
         
     # Skip the rest of LoFTR logic
     self.bundler._fm.rawMatchesToCorres(frame_pairs)
@@ -718,12 +776,15 @@ class BundleSdf:
       self.bundler._frames[frame._id] = frame
       return
 
-    coarse_method = self.cfg_track.get('coarse', {}).get('method', 'feature')
+    coarse_method = self.cfg_track.get('coarse', {}).get('method', 'icp')
     feat_enabled = int(self.cfg_track.get("feature_corres", {}).get("enabled", 1)) == 1
-    if coarse_method == 'icp':
-      logging.info("Coarse method: ICP on point clouds")
+    if coarse_method in ['icp', 'colored_icp']:
+      logging.info(f"Coarse method: {coarse_method} on point clouds")
       logging.info(f"frame {frame._id_str} pose update before\n{frame._pose_in_model.round(3)}")
-      offset = self._icp_coarse_residual(frame, ref_frame)
+      if coarse_method == 'colored_icp':
+        offset = self._colored_icp_coarse_residual(frame, ref_frame)
+      else:
+        offset = self._icp_coarse_residual(frame, ref_frame)
       frame._pose_in_model = offset @ frame._pose_in_model
       logging.info(f"frame {frame._id_str} pose update after\n{frame._pose_in_model.round(3)}")
     else:
