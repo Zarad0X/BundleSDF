@@ -17,6 +17,9 @@ import my_cpp
 from gui import *
 from BundleTrack.scripts.data_reader import *
 from Utils import *
+'''
+Switch between LoFTR and AllTracker here
+'''
 
 from loftr_wrapper import AlltrackerRunner
 import multiprocessing,threading
@@ -584,7 +587,6 @@ class BundleSdf:
     logging.info("Using Alltracker with video sequence, skipping ROI cropping")
     for (frameA, frameB) in frame_pairs:
       start_f, end_f = frameA, frameB
-      
       seq = []
       # for fid in range(start_f._id, end_f._id):
       #   if fid in self.bundler._frames:
@@ -651,15 +653,15 @@ class BundleSdf:
           matches_masked = matches_in_bounds[valid_mask]
           matches = matches_masked
       self.bundler._fm._raw_matches[(frameA, frameB)] = matches.round().astype(np.uint16)
-          
-      # Skip the rest of LoFTR logic
-      self.bundler._fm.rawMatchesToCorres(frame_pairs)
-      for pair in frame_pairs:
-        self.bundler._fm.vizCorresBetween(pair[0], pair[1], 'before_ransac')
-      self.bundler._fm.runRansacMultiPairGPU(frame_pairs)
-      for pair in frame_pairs:
-        self.bundler._fm.vizCorresBetween(pair[0], pair[1], 'after_ransac')
-      return
+        
+    # Skip the rest of LoFTR logic
+    self.bundler._fm.rawMatchesToCorres(frame_pairs)
+    for pair in frame_pairs:
+      self.bundler._fm.vizCorresBetween(pair[0], pair[1], 'before_ransac')
+    self.bundler._fm.runRansacMultiPairGPU(frame_pairs)
+    for pair in frame_pairs:
+      self.bundler._fm.vizCorresBetween(pair[0], pair[1], 'after_ransac')
+    return
 
 
 

@@ -58,8 +58,10 @@ class AlltrackerRunner:
     
     # We want matches from frame 0 to frame T-1
     # traj_maps[0, T-1] contains coordinates in frame T-1 for each pixel in frame 0
-    if traj_maps.dim() == 4:
+    if traj_maps.dim() == 5:
       coords_end = traj_maps[0, -1].permute(1, 2, 0).cpu().numpy() # (H,W,2)
+    else:
+      coords_end = traj_maps[0].permute(1, 2, 0).cpu().numpy() # (H,W,2) 
     if visconf_maps.dim() == 4:
        vis = visconf_maps[0, 0].cpu().numpy() # (B, 2, H, W) -> (H, W)
        conf = visconf_maps[0, 1].cpu().numpy() # (B, 2, H, W) -> (H, W)
@@ -124,7 +126,7 @@ class AlltrackerRunner:
       conf_sel = conf_flat[mask]
 
       # [x0, y0, x1, y1, conf]
-      res = np.concatenate([pts0_sel, pts1_sel], axis=1).astype(np.float32)
+      res = np.concatenate([pts0_sel, pts1_sel, conf_sel], axis=1).astype(np.float32)
       corres_all.append(res)
 
     return corres_all
