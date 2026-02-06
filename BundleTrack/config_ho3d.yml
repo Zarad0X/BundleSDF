@@ -41,7 +41,7 @@ bundle:
   depth_association_radius: 5  # 0: findDenseCorr; 1: findDenseCorrNearestNeighbor3D
   non_neighbor_max_rot: 90
   non_neighbor_min_visible: 0.1   # ratio of pixel visible
-  icp_pose_rot_thres: 60    # Rotation larger than XX deg is ignored for icp
+  icp_pose_rot_thres: 10    # Rotation larger than XX deg is ignored for icp
   w_rpi: 0
   w_p2p: 1    # Used in loss.cpp
   w_fm: 1
@@ -61,6 +61,11 @@ keyframe:
   min_rot: 0.1
   min_visible: 1
   force_all: 0
+
+coarse:
+  method: 'colored_icp'
+  icp_voxel_size: 0.005      # 提高点云密度
+  icp_max_corres_dist: 0.05  # 增大搜索范围，增强对运动的鲁棒性
 
 
 sift:

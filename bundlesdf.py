@@ -595,14 +595,18 @@ class BundleSdf:
           src, dst, max_corr, np.eye(4),
           o3d.pipelines.registration.TransformationEstimationForColoredICP(),
           criteria=o3d.pipelines.registration.ICPConvergenceCriteria(
-              relative_fitness=1e-6, relative_rmse=1e-6, max_iteration=50))
+              relative_fitness=1e-6, relative_rmse=1e-6, max_iteration=100))
       
       # 如果 fitness 太低，回退到点到面 ICP
       if result.fitness < 0.8:
           logging.info(f"Colored ICP fitness low ({result.fitness:.3f}), falling back to point-to-plane")
           result = o3d.pipelines.registration.registration_icp(
               src, dst, max_corr, np.eye(4),
-              o3d.pipelines.registration.TransformationEstimationPointToPlane())
+              o3d.pipelines.registration.TransformationEstimationPointToPlane(),
+              criteria=o3d.pipelines.registration.ICPConvergenceCriteria(
+                relative_fitness=1e-6, 
+                relative_rmse=1e-6, 
+                max_iteration=100))
           
       T = np.array(result.transformation)
     except Exception as e:
