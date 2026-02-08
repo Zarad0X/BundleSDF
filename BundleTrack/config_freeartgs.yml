@@ -44,7 +44,7 @@ bundle:
   icp_pose_rot_thres: 60    # Rotation larger than XX deg is ignored for icp
   w_rpi: 0
   w_p2p: 1    # Used in loss.cpp
-  w_fm: 1
+  w_fm: 0
   w_sdf: 0
   w_pm: 0
   robust_delta: 0.005
@@ -55,11 +55,12 @@ bundle:
   max_optimized_feature_loss: 0.03
 
 keyframe:
-  min_interval: 0
+  min_interval: 1
   min_feat_num: 0
   min_trans: 0
-  min_rot: 0
+  min_rot: 0.1
   min_visible: 1
+  force_all: 0
 
 
 sift:
@@ -81,7 +82,7 @@ feature_corres:
   max_view_normal_angle: 180
   min_match_with_ref: 5
   resize: 400
-  rematch_after_nerf: True
+  rematch_after_nerf: False
 
 ransac:
   max_iter: 2000

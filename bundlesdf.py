@@ -412,9 +412,11 @@ def run_nerf(p_dict, kf_to_nerf_list, lock, cfg_nerf, translation, sc_factor, st
             tmp[k] = tmp[k].tolist()
         yaml.dump(tmp,ff)
       shutil.copy(f"{out_dir}/config.yml",f"{cfg_nerf['save_dir']}/")
-      np.savetxt(f"{debug_dir}/{frame_id}/poses_after_nerf.txt",np.array(optimized_cvcam_in_obs).reshape(-1,4))
-      mesh.export(f"{cfg_nerf['save_dir']}/mesh_real_world.obj")
+      if mesh is not None:
+        mesh.export(f"{cfg_nerf['save_dir']}/mesh_real_world.obj")
       os.system(f"rm -rf {cfg_nerf['save_dir']}/step_*_mesh_real_world.obj {cfg_nerf['save_dir']}/*frame*ray*.ply && mv {cfg_nerf['save_dir']}/*  {out_dir}/")
+
+    np.savetxt(f"{debug_dir}/{frame_id}/poses_after_nerf.txt",np.array(optimized_cvcam_in_obs).reshape(-1,4))
 
 
 
@@ -511,7 +513,69 @@ class BundleSdf:
     return frame
 
 
+  def _frame_to_world_pcd(self, frame, voxel_size=0.01):
+    rgb = np.array(frame._color)
+    depth = np.array(frame._depth)
+    mask = np.array(frame._fg_mask) if frame._fg_mask is not None else np.ones_like(depth)
+    H,W = depth.shape[:2]
+    valid = (depth > 0.1)
+    if mask.shape[:2] != depth.shape[:2]:
+      mask = cv2.resize(mask, (W, H), interpolation=cv2.INTER_NEAREST)
+    valid = valid & (mask > 0)
+    if valid.sum() < 100:
+      return None
+    xyz_map = depth2xyzmap(depth, self.K)
+    pts = xyz_map.reshape(-1,3)[valid.reshape(-1)]
+    cols = rgb.reshape(-1,3)[valid.reshape(-1)]
+    pcd = toOpen3dCloud(pts, colors=cols)
+    if voxel_size and voxel_size > 0:
+      pcd = pcd.voxel_down_sample(voxel_size)
+    try:
+      pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=max(voxel_size*2.5, 0.02), max_nn=30))
+    except Exception:
+      pass
+    # transform to world/model coordinates using current pose estimate
+    pcd.transform(np.array(frame._pose_in_model))
+    return pcd
+
+
+  def _icp_coarse_residual(self, frame, ref_frame):
+    # Read config
+    coarse_cfg = self.cfg_track.get('coarse', {})
+    voxel = float(coarse_cfg.get('icp_voxel_size', 0.01))
+    max_corr = float(coarse_cfg.get('icp_max_corres_dist', 0.02))
+    rot_thres_deg = float(self.cfg_track.get('bundle', {}).get('icp_pose_rot_thres', 60))
+    rot_thres_rad = rot_thres_deg/180.0*np.pi
+
+    src = self._frame_to_world_pcd(frame, voxel_size=voxel)
+    dst = self._frame_to_world_pcd(ref_frame, voxel_size=voxel)
+    if src is None or dst is None:
+      logging.warning("ICP coarse: invalid pcd (too few points)")
+      return np.eye(4)
+
+    try:
+      result = o3d.pipelines.registration.registration_icp(
+        src, dst, max_corr, np.eye(4),
+        o3d.pipelines.registration.TransformationEstimationPointToPlane())
+      T = np.array(result.transformation)
+    except Exception as e:
+      logging.warning(f"ICP coarse failed: {e}")
+      return np.eye(4)
+
+    # Sanity check on rotation magnitude
+    R = T[:3,:3]
+    ang = np.arccos(np.clip((np.trace(R)-1)/2.0, -1.0, 1.0))
+    if ang >= rot_thres_rad:
+      logging.warning(f"ICP coarse rejected for large rotation: {ang} rad >= {rot_thres_rad} rad")
+      return np.eye(4)
+    return T
+
+
   def find_corres(self, frame_pairs):
+    # Optionally disable feature matching entirely
+    if int(self.cfg_track.get("feature_corres", {}).get("enabled", 1)) == 0:
+      logging.info("feature_corres.enabled=0; skip feature matching/RANSAC")
+      return
     logging.info(f"frame_pairs: {len(frame_pairs)}")
     is_match_ref = len(frame_pairs)==1 and frame_pairs[0][0]._ref_frame_id==frame_pairs[0][1]._id and self.bundler._newframe==frame_pairs[0][0]
 
@@ -693,8 +757,11 @@ class BundleSdf:
     if percentile<100:   # Denoise
       logging.info("percentile denoise start")
       valid = (depth>=0.1) & (mask>0)
-      thres = np.percentile(depth[valid], percentile)
-      depth[depth>=thres] = 0
+      if np.any(valid):
+        thres = np.percentile(depth[valid], percentile)
+        depth[depth>=thres] = 0
+      else:
+        logging.warning("percentile denoise skipped: no valid depth under mask")
       logging.info("percentile denoise done")
 
     frame = self.make_frame(color, depth, K, id_str, mask, occ_mask, pose_in_model)
@@ -730,16 +797,27 @@ class BundleSdf:
           for f in self.bundler._keyframes:
             ff.write(f"{f._id_str}\n")
 
-      ############# Wait for sync
+      ############# Wait for sync (bounded and safe)
+      wait_start_ts = time.time()
+      max_wait_seconds = float(os.environ.get('NERF_SYNC_TIMEOUT_S', '3'))
       while 1:
         with self.lock:
           running = self.p_dict['running']
           nerf_num_frames = self.p_dict['nerf_num_frames']
         if not running:
           break
+        # If NeRF worker has died, stop waiting to avoid deadlock
+        if not self.p_nerf.is_alive():
+          logging.warning("NeRF worker not alive. Skipping sync wait.")
+          with self.lock:
+            self.p_dict['running'] = False
+          break
+        # Enforce backlog bound with a timeout for responsiveness
         if len(self.bundler._keyframes)-nerf_num_frames>=self.cfg_nerf['sync_max_delay']:
+          if time.time() - wait_start_ts > max_wait_seconds:
+            logging.warning(f"Sync wait timeout {max_wait_seconds}s exceeded (keyframes={len(self.bundler._keyframes)}, nerf_num_frames={nerf_num_frames}). Proceeding.")
+            break
           time.sleep(0.01)
-          # logging.info(f"wait for sync len(self.bundler._keyframes):{len(self.bundler._keyframes)}, nerf_num_frames:{nerf_num_frames}")
           continue
         break
 

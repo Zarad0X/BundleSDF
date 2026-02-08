@@ -968,6 +968,7 @@ void Bundler::saveNewframeResult()
   const std::string debug_dir = (*yml)["debug_dir"].as<std::string>();
   const std::string out_dir = Utils::joinPath(debug_dir, _newframe->_id_str) + "/";
   const std::string pose_out_dir = Utils::joinPath(debug_dir, "ob_in_cam") + "/";
+  const std::string cam_pose_out_dir = Utils::joinPath(debug_dir, "cam_in_ob") + "/";
 
   if (!boost::filesystem::exists(K_file))
   {
@@ -988,6 +989,11 @@ void Bundler::saveNewframeResult()
     system(std::string("mkdir -p " + Utils::joinPath(debug_dir, "normal")).c_str());
     system(std::string("mkdir -p " + Utils::joinPath(debug_dir, "mask")).c_str());
   }
+  // Ensure cam_in_ob directory always exists (handle cases where ob_in_cam exists already)
+  if (!boost::filesystem::exists(cam_pose_out_dir))
+  {
+    system(std::string("mkdir -p "+cam_pose_out_dir).c_str());
+  }
 
   Eigen::Matrix4f cur_in_model = _newframe->_pose_in_model;
   Eigen::Matrix4f ob_in_cam = cur_in_model.inverse();
@@ -997,6 +1003,11 @@ void Bundler::saveNewframeResult()
     std::ofstream ff(pose_out_dir+_newframe->_id_str+".txt");
     ff<<std::setprecision(10)<<ob_in_cam<<std::endl;
     ff.close();
+
+    // Also save cam_in_ob (pose in model) for every frame
+    std::ofstream ff_cam(cam_pose_out_dir+_newframe->_id_str+".txt");
+    ff_cam<<std::setprecision(10)<<cur_in_model<<std::endl;
+    ff_cam.close();
 
     cv::imwrite(Utils::joinPath(debug_dir, "color", _newframe->_id_str + ".png"),_newframe->_color_raw);
     cv::Mat depth_u16;

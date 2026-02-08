@@ -100,4 +100,4 @@ dbscan_eps: 0.06
 dbscan_eps_min_samples: 1
 
 ####### bundlenerf
-sync_max_delay: 0   # 0 for strict sync
+sync_max_delay: 5   # 0 for strict sync
